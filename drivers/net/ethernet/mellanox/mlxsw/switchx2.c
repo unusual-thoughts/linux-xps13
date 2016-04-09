@@ -43,6 +43,7 @@
 #include <linux/device.h>
 #include <linux/skbuff.h>
 #include <linux/if_vlan.h>
+#include <net/devlink.h>
 #include <net/switchdev.h>
 #include <generated/utsrelease.h>
 
@@ -78,6 +79,7 @@ struct mlxsw_sx_port {
 	struct mlxsw_sx_port_pcpu_stats __percpu *pcpu_stats;
 	struct mlxsw_sx *mlxsw_sx;
 	u8 local_port;
+	struct devlink_port devlink_port;
 };
 
 /* tx_hdr_version
@@ -516,7 +518,8 @@ static void mlxsw_sx_port_get_stats(struct net_device *dev,
 	int i;
 	int err;
 
-	mlxsw_reg_ppcnt_pack(ppcnt_pl, mlxsw_sx_port->local_port);
+	mlxsw_reg_ppcnt_pack(ppcnt_pl, mlxsw_sx_port->local_port,
+			     MLXSW_REG_PPCNT_IEEE_8023_CNT, 0);
 	err = mlxsw_reg_query(mlxsw_sx->core, MLXSW_REG(ppcnt), ppcnt_pl);
 	for (i = 0; i < MLXSW_SX_PORT_HW_STATS_LEN; i++)
 		data[i] = !err ? mlxsw_sx_port_hw_stats[i].getter(ppcnt_pl) : 0;
@@ -953,7 +956,9 @@ mlxsw_sx_port_mac_learning_mode_set(struct mlxsw_sx_port *mlxsw_sx_port,
 
 static int mlxsw_sx_port_create(struct mlxsw_sx *mlxsw_sx, u8 local_port)
 {
+	struct devlink *devlink = priv_to_devlink(mlxsw_sx->core);
 	struct mlxsw_sx_port *mlxsw_sx_port;
+	struct devlink_port *devlink_port;
 	struct net_device *dev;
 	bool usable;
 	int err;
@@ -1005,6 +1010,14 @@ static int mlxsw_sx_port_create(struct mlxsw_sx *mlxsw_sx, u8 local_port)
 		dev_dbg(mlxsw_sx->bus_info->dev, "Port %d: Not usable, skipping initialization\n",
 			mlxsw_sx_port->local_port);
 		goto port_not_usable;
+	}
+
+	devlink_port = &mlxsw_sx_port->devlink_port;
+	err = devlink_port_register(devlink, devlink_port, local_port);
+	if (err) {
+		dev_err(mlxsw_sx->bus_info->dev, "Port %d: Failed to register devlink port\n",
+			mlxsw_sx_port->local_port);
+		goto err_devlink_port_register;
 	}
 
 	err = mlxsw_sx_port_system_port_mapping_set(mlxsw_sx_port);
@@ -1064,6 +1077,8 @@ static int mlxsw_sx_port_create(struct mlxsw_sx *mlxsw_sx, u8 local_port)
 		goto err_register_netdev;
 	}
 
+	devlink_port_type_eth_set(devlink_port, dev);
+
 	mlxsw_sx->ports[local_port] = mlxsw_sx_port;
 	return 0;
 
@@ -1075,6 +1090,8 @@ err_port_mtu_set:
 err_port_speed_set:
 err_port_swid_set:
 err_port_system_port_mapping_set:
+	devlink_port_unregister(&mlxsw_sx_port->devlink_port);
+err_devlink_port_register:
 port_not_usable:
 err_port_module_check:
 err_dev_addr_get:
@@ -1087,11 +1104,15 @@ err_alloc_stats:
 static void mlxsw_sx_port_remove(struct mlxsw_sx *mlxsw_sx, u8 local_port)
 {
 	struct mlxsw_sx_port *mlxsw_sx_port = mlxsw_sx->ports[local_port];
+	struct devlink_port *devlink_port;
 
 	if (!mlxsw_sx_port)
 		return;
+	devlink_port = &mlxsw_sx_port->devlink_port;
+	devlink_port_type_clear(devlink_port);
 	unregister_netdev(mlxsw_sx_port->dev); /* This calls ndo_stop */
 	mlxsw_sx_port_swid_set(mlxsw_sx_port, MLXSW_PORT_SWID_DISABLED_PORT);
+	devlink_port_unregister(devlink_port);
 	free_percpu(mlxsw_sx_port->pcpu_stats);
 	free_netdev(mlxsw_sx_port->dev);
 }
@@ -1147,7 +1168,7 @@ static void mlxsw_sx_pude_event_func(const struct mlxsw_reg_info *reg,
 	}
 
 	status = mlxsw_reg_pude_oper_status_get(pude_pl);
-	if (MLXSW_PORT_OPER_STATUS_UP == status) {
+	if (status == MLXSW_PORT_OPER_STATUS_UP) {
 		netdev_info(mlxsw_sx_port->dev, "link up\n");
 		netif_carrier_on(mlxsw_sx_port->dev);
 	} else {

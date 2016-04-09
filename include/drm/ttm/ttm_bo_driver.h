@@ -826,10 +826,10 @@ static inline int __ttm_bo_reserve(struct ttm_buffer_object *bo,
  * reserved, the validation sequence is checked against the validation
  * sequence of the process currently reserving the buffer,
  * and if the current validation sequence is greater than that of the process
- * holding the reservation, the function returns -EAGAIN. Otherwise it sleeps
+ * holding the reservation, the function returns -EDEADLK. Otherwise it sleeps
  * waiting for the buffer to become unreserved, after which it retries
  * reserving.
- * The caller should, when receiving an -EAGAIN error
+ * The caller should, when receiving an -EDEADLK error
  * release all its buffer reservations, wait for @bo to become unreserved, and
  * then rerun the validation with the same validation sequence. This procedure
  * will always guarantee that the process with the lowest validation sequence
@@ -1030,8 +1030,7 @@ extern pgprot_t ttm_io_prot(uint32_t caching_flags, pgprot_t tmp);
 
 extern const struct ttm_mem_type_manager_func ttm_bo_manager_func;
 
-#if (defined(CONFIG_AGP) || (defined(CONFIG_AGP_MODULE) && defined(MODULE)))
-#define TTM_HAS_AGP
+#if IS_ENABLED(CONFIG_AGP)
 #include <linux/agp_backend.h>
 
 /**

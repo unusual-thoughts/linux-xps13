@@ -12,6 +12,7 @@
 #include <linux/memcontrol.h>
 #include <linux/mmu_notifier.h>
 #include <linux/page_idle.h>
+#include <linux/pageteam.h>
 #include <linux/kernel-page-flags.h>
 #include <asm/uaccess.h>
 #include "internal.h"
@@ -112,6 +113,11 @@ u64 stable_page_flags(struct page *page)
 	if (PageKsm(page))
 		u |= 1 << KPF_KSM;
 
+	if (PageTeam(page)) {
+		u |= 1 << KPF_TEAM;
+		if (page == team_head(page) && team_pmd_mapped(page))
+			u |= 1 << KPF_TEAM_PMD_MMAP;
+	}
 	/*
 	 * compound pages: export both head/tail info
 	 * they together define a compound page's start/end pos and order
@@ -142,11 +148,13 @@ u64 stable_page_flags(struct page *page)
 
 
 	/*
-	 * Caveats on high order pages: page->_count will only be set
+	 * Caveats on high order pages: page->_refcount will only be set
 	 * -1 on the head page; SLUB/SLQB do the same for PG_slab;
 	 * SLOB won't set PG_slab at all on compound pages.
 	 */
 	if (PageBuddy(page))
+		u |= 1 << KPF_BUDDY;
+	else if (page_count(page) == 0 && is_free_buddy_page(page))
 		u |= 1 << KPF_BUDDY;
 
 	if (PageBalloon(page))
@@ -158,6 +166,8 @@ u64 stable_page_flags(struct page *page)
 	u |= kpf_copy_bit(k, KPF_LOCKED,	PG_locked);
 
 	u |= kpf_copy_bit(k, KPF_SLAB,		PG_slab);
+	if (PageTail(page) && PageSlab(compound_head(page)))
+		u |= 1 << KPF_SLAB;
 
 	u |= kpf_copy_bit(k, KPF_ERROR,		PG_error);
 	u |= kpf_copy_bit(k, KPF_DIRTY,		PG_dirty);

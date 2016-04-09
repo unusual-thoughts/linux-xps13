@@ -4,6 +4,7 @@ obj- := dummy.o
 # List of programs to build
 hostprogs-y := test_verifier test_maps
 hostprogs-y += sock_example
+hostprogs-y += fds_example
 hostprogs-y += sockex1
 hostprogs-y += sockex2
 hostprogs-y += sockex3
@@ -15,10 +16,15 @@ hostprogs-y += tracex5
 hostprogs-y += tracex6
 hostprogs-y += trace_output
 hostprogs-y += lathist
+hostprogs-y += offwaketime
+hostprogs-y += spintest
+hostprogs-y += map_perf_test
+hostprogs-y += test_overhead
 
 test_verifier-objs := test_verifier.o libbpf.o
 test_maps-objs := test_maps.o libbpf.o
 sock_example-objs := sock_example.o libbpf.o
+fds_example-objs := bpf_load.o libbpf.o fds_example.o
 sockex1-objs := bpf_load.o libbpf.o sockex1_user.o
 sockex2-objs := bpf_load.o libbpf.o sockex2_user.o
 sockex3-objs := bpf_load.o libbpf.o sockex3_user.o
@@ -30,6 +36,10 @@ tracex5-objs := bpf_load.o libbpf.o tracex5_user.o
 tracex6-objs := bpf_load.o libbpf.o tracex6_user.o
 trace_output-objs := bpf_load.o libbpf.o trace_output_user.o
 lathist-objs := bpf_load.o libbpf.o lathist_user.o
+offwaketime-objs := bpf_load.o libbpf.o offwaketime_user.o
+spintest-objs := bpf_load.o libbpf.o spintest_user.o
+map_perf_test-objs := bpf_load.o libbpf.o map_perf_test_user.o
+test_overhead-objs := bpf_load.o libbpf.o test_overhead_user.o
 
 # Tell kbuild to always build the programs
 always := $(hostprogs-y)
@@ -45,10 +55,16 @@ always += tracex6_kern.o
 always += trace_output_kern.o
 always += tcbpf1_kern.o
 always += lathist_kern.o
+always += offwaketime_kern.o
+always += spintest_kern.o
+always += map_perf_test_kern.o
+always += test_overhead_tp_kern.o
+always += test_overhead_kprobe_kern.o
 
 HOSTCFLAGS += -I$(objtree)/usr/include
 
 HOSTCFLAGS_bpf_load.o += -I$(objtree)/usr/include -Wno-unused-variable
+HOSTLOADLIBES_fds_example += -lelf
 HOSTLOADLIBES_sockex1 += -lelf
 HOSTLOADLIBES_sockex2 += -lelf
 HOSTLOADLIBES_sockex3 += -lelf
@@ -60,14 +76,15 @@ HOSTLOADLIBES_tracex5 += -lelf
 HOSTLOADLIBES_tracex6 += -lelf
 HOSTLOADLIBES_trace_output += -lelf -lrt
 HOSTLOADLIBES_lathist += -lelf
+HOSTLOADLIBES_offwaketime += -lelf
+HOSTLOADLIBES_spintest += -lelf
+HOSTLOADLIBES_map_perf_test += -lelf -lrt
+HOSTLOADLIBES_test_overhead += -lelf -lrt
 
-# point this to your LLVM backend with bpf support
-LLC=$(srctree)/tools/bpf/llvm/bld/Debug+Asserts/bin/llc
-
+# asm/sysreg.h - inline assembly used by it is incompatible with llvm.
+# But, there is no easy way to fix it, so just exclude it since it is
+# useless for BPF samples.
 $(obj)/%.o: $(src)/%.c
 	clang $(NOSTDINC_FLAGS) $(LINUXINCLUDE) $(EXTRA_CFLAGS) \
-		-D__KERNEL__ -Wno-unused-value -Wno-pointer-sign \
-		-O2 -emit-llvm -c $< -o -| $(LLC) -march=bpf -filetype=obj -o $@
-	clang $(NOSTDINC_FLAGS) $(LINUXINCLUDE) $(EXTRA_CFLAGS) \
-		-D__KERNEL__ -Wno-unused-value -Wno-pointer-sign \
-		-O2 -emit-llvm -c $< -o -| $(LLC) -march=bpf -filetype=asm -o $@.s
+		-D__KERNEL__ -D__ASM_SYSREG_H -Wno-unused-value -Wno-pointer-sign \
+		-O2 -emit-llvm -c $< -o -| llc -march=bpf -filetype=obj -o $@

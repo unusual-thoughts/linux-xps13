@@ -451,6 +451,7 @@ static int torture_shutdown(void *arg)
 		torture_shutdown_hook();
 	else
 		VERBOSE_TOROUT_STRING("No torture_shutdown_hook(), skipping.");
+	ftrace_dump(DUMP_ALL);
 	kernel_power_off();	/* Shut down the system. */
 	return 0;
 }
@@ -523,6 +524,7 @@ static int stutter;
  */
 void stutter_wait(const char *title)
 {
+	cond_resched_rcu_qs();
 	while (READ_ONCE(stutter_pause_test) ||
 	       (torture_runnable && !READ_ONCE(*torture_runnable))) {
 		if (stutter_pause_test)
@@ -601,8 +603,9 @@ bool torture_init_begin(char *ttype, bool v, int *runnable)
 {
 	mutex_lock(&fullstop_mutex);
 	if (torture_type != NULL) {
-		pr_alert("torture_init_begin: refusing %s init: %s running",
+		pr_alert("torture_init_begin: Refusing %s init: %s running.\n",
 			 ttype, torture_type);
+		pr_alert("torture_init_begin: One torture test at a time!\n");
 		mutex_unlock(&fullstop_mutex);
 		return false;
 	}

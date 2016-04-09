@@ -304,7 +304,19 @@ int main(int argc, char **argv)
 			}
 		}
 
-		/* Verify the trigger exists */
+		/* Look for this "-devN" trigger */
+		trig_num = find_type_by_name(trigger_name, "trigger");
+		if (trig_num < 0) {
+			/* OK try the simpler "-trigger" suffix instead */
+			free(trigger_name);
+			ret = asprintf(&trigger_name,
+				       "%s-trigger", device_name);
+			if (ret < 0) {
+				ret = -ENOMEM;
+				goto error_free_dev_dir_name;
+			}
+		}
+
 		trig_num = find_type_by_name(trigger_name, "trigger");
 		if (trig_num < 0) {
 			fprintf(stderr, "Failed to find the trigger %s\n",
@@ -326,6 +338,15 @@ int main(int argc, char **argv)
 	if (ret) {
 		fprintf(stderr, "Problem reading scan element information\n"
 			"diag %s\n", dev_dir_name);
+		goto error_free_triggername;
+	}
+	if (!num_channels) {
+		fprintf(stderr,
+			"No channels are enabled, we have nothing to scan.\n");
+		fprintf(stderr, "Enable channels manually in "
+			FORMAT_SCAN_ELEMENTS_DIR
+			"/*_en and try again.\n", dev_dir_name);
+		ret = -ENOENT;
 		goto error_free_triggername;
 	}
 

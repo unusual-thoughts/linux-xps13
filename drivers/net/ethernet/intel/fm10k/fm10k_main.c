@@ -28,7 +28,7 @@
 
 #include "fm10k.h"
 
-#define DRV_VERSION	"0.15.2-k"
+#define DRV_VERSION	"0.19.3-k"
 const char fm10k_driver_version[] = DRV_VERSION;
 char fm10k_driver_name[] = "fm10k";
 static const char fm10k_driver_string[] =
@@ -42,7 +42,7 @@ MODULE_LICENSE("GPL");
 MODULE_VERSION(DRV_VERSION);
 
 /* single workqueue for entire fm10k driver */
-struct workqueue_struct *fm10k_workqueue = NULL;
+struct workqueue_struct *fm10k_workqueue;
 
 /**
  * fm10k_init_module - Driver Registration Routine
@@ -56,8 +56,7 @@ static int __init fm10k_init_module(void)
 	pr_info("%s\n", fm10k_copyright);
 
 	/* create driver workqueue */
-	if (!fm10k_workqueue)
-		fm10k_workqueue = create_workqueue("fm10k");
+	fm10k_workqueue = create_workqueue("fm10k");
 
 	fm10k_dbg_init();
 
@@ -80,7 +79,6 @@ static void __exit fm10k_exit_module(void)
 	/* destroy driver workqueue */
 	flush_workqueue(fm10k_workqueue);
 	destroy_workqueue(fm10k_workqueue);
-	fm10k_workqueue = NULL;
 }
 module_exit(fm10k_exit_module);
 
@@ -245,7 +243,7 @@ static bool fm10k_can_reuse_rx_page(struct fm10k_rx_buffer *rx_buffer,
 	/* Even if we own the page, we are not allowed to use atomic_set()
 	 * This would break get_page_unless_zero() users.
 	 */
-	atomic_inc(&page->_count);
+	page_ref_inc(page);
 
 	return true;
 }
@@ -403,10 +401,10 @@ static inline void fm10k_rx_checksum(struct fm10k_ring *ring,
 }
 
 #define FM10K_RSS_L4_TYPES_MASK \
-	((1ul << FM10K_RSSTYPE_IPV4_TCP) | \
-	 (1ul << FM10K_RSSTYPE_IPV4_UDP) | \
-	 (1ul << FM10K_RSSTYPE_IPV6_TCP) | \
-	 (1ul << FM10K_RSSTYPE_IPV6_UDP))
+	(BIT(FM10K_RSSTYPE_IPV4_TCP) | \
+	 BIT(FM10K_RSSTYPE_IPV4_UDP) | \
+	 BIT(FM10K_RSSTYPE_IPV6_TCP) | \
+	 BIT(FM10K_RSSTYPE_IPV6_UDP))
 
 static inline void fm10k_rx_hash(struct fm10k_ring *ring,
 				 union fm10k_rx_desc *rx_desc,
@@ -422,7 +420,7 @@ static inline void fm10k_rx_hash(struct fm10k_ring *ring,
 		return;
 
 	skb_set_hash(skb, le32_to_cpu(rx_desc->d.rss),
-		     (FM10K_RSS_L4_TYPES_MASK & (1ul << rss_type)) ?
+		     (BIT(rss_type) & FM10K_RSS_L4_TYPES_MASK) ?
 		     PKT_HASH_TYPE_L4 : PKT_HASH_TYPE_L3);
 }
 
@@ -917,7 +915,7 @@ static u8 fm10k_tx_desc_flags(struct sk_buff *skb, u32 tx_flags)
 	/* set timestamping bits */
 	if (unlikely(skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP) &&
 	    likely(skb_shinfo(skb)->tx_flags & SKBTX_IN_PROGRESS))
-			desc_flags |= FM10K_TXD_FLAG_TIME;
+		desc_flags |= FM10K_TXD_FLAG_TIME;
 
 	/* set checksum offload bits */
 	desc_flags |= FM10K_SET_FLAG(tx_flags, FM10K_TX_FLAGS_CSUM,
@@ -1094,11 +1092,11 @@ dma_error:
 netdev_tx_t fm10k_xmit_frame_ring(struct sk_buff *skb,
 				  struct fm10k_ring *tx_ring)
 {
-	struct fm10k_tx_buffer *first;
-	int tso;
-	u32 tx_flags = 0;
-	unsigned short f;
 	u16 count = TXD_USE_COUNT(skb_headlen(skb));
+	struct fm10k_tx_buffer *first;
+	unsigned short f;
+	u32 tx_flags = 0;
+	int tso;
 
 	/* need: 1 descriptor per page * PAGE_SIZE/FM10K_MAX_DATA_PER_TXD,
 	 *       + 1 desc for skb_headlen/FM10K_MAX_DATA_PER_TXD,
@@ -1363,10 +1361,10 @@ static bool fm10k_clean_tx_irq(struct fm10k_q_vector *q_vector,
  **/
 static void fm10k_update_itr(struct fm10k_ring_container *ring_container)
 {
-	unsigned int avg_wire_size, packets;
+	unsigned int avg_wire_size, packets, itr_round;
 
 	/* Only update ITR if we are using adaptive setting */
-	if (!(ring_container->itr & FM10K_ITR_ADAPTIVE))
+	if (!ITR_IS_ADAPTIVE(ring_container->itr))
 		goto clear_counts;
 
 	packets = ring_container->total_packets;
@@ -1375,18 +1373,44 @@ static void fm10k_update_itr(struct fm10k_ring_container *ring_container)
 
 	avg_wire_size = ring_container->total_bytes / packets;
 
-	/* Add 24 bytes to size to account for CRC, preamble, and gap */
-	avg_wire_size += 24;
+	/* The following is a crude approximation of:
+	 *  wmem_default / (size + overhead) = desired_pkts_per_int
+	 *  rate / bits_per_byte / (size + ethernet overhead) = pkt_rate
+	 *  (desired_pkt_rate / pkt_rate) * usecs_per_sec = ITR value
+	 *
+	 * Assuming wmem_default is 212992 and overhead is 640 bytes per
+	 * packet, (256 skb, 64 headroom, 320 shared info), we can reduce the
+	 * formula down to
+	 *
+	 *  (34 * (size + 24)) / (size + 640) = ITR
+	 *
+	 * We first do some math on the packet size and then finally bitshift
+	 * by 8 after rounding up. We also have to account for PCIe link speed
+	 * difference as ITR scales based on this.
+	 */
+	if (avg_wire_size <= 360) {
+		/* Start at 250K ints/sec and gradually drop to 77K ints/sec */
+		avg_wire_size *= 8;
+		avg_wire_size += 376;
+	} else if (avg_wire_size <= 1152) {
+		/* 77K ints/sec to 45K ints/sec */
+		avg_wire_size *= 3;
+		avg_wire_size += 2176;
+	} else if (avg_wire_size <= 1920) {
+		/* 45K ints/sec to 38K ints/sec */
+		avg_wire_size += 4480;
+	} else {
+		/* plateau at a limit of 38K ints/sec */
+		avg_wire_size = 6656;
+	}
 
-	/* Don't starve jumbo frames */
-	if (avg_wire_size > 3000)
-		avg_wire_size = 3000;
-
-	/* Give a little boost to mid-size frames */
-	if ((avg_wire_size > 300) && (avg_wire_size < 1200))
-		avg_wire_size /= 3;
-	else
-		avg_wire_size /= 2;
+	/* Perform final bitshift for division after rounding up to ensure
+	 * that the calculation will never get below a 1. The bit shift
+	 * accounts for changes in the ITR due to PCIe link speed.
+	 */
+	itr_round = ACCESS_ONCE(ring_container->itr_scale) + 8;
+	avg_wire_size += BIT(itr_round) - 1;
+	avg_wire_size >>= itr_round;
 
 	/* write back value and retain adaptive flag */
 	ring_container->itr = avg_wire_size | FM10K_ITR_ADAPTIVE;
@@ -1428,11 +1452,15 @@ static int fm10k_poll(struct napi_struct *napi, int budget)
 	fm10k_for_each_ring(ring, q_vector->tx)
 		clean_complete &= fm10k_clean_tx_irq(q_vector, ring);
 
+	/* Handle case where we are called by netpoll with a budget of 0 */
+	if (budget <= 0)
+		return budget;
+
 	/* attempt to distribute budget to each queue fairly, but don't
 	 * allow the budget to go below 1 because we'll exit polling
 	 */
 	if (q_vector->rx.count > 1)
-		per_ring_budget = max(budget/q_vector->rx.count, 1);
+		per_ring_budget = max(budget / q_vector->rx.count, 1);
 	else
 		per_ring_budget = budget;
 
@@ -1483,17 +1511,17 @@ static bool fm10k_set_qos_queues(struct fm10k_intfc *interface)
 	/* set QoS mask and indices */
 	f = &interface->ring_feature[RING_F_QOS];
 	f->indices = pcs;
-	f->mask = (1 << fls(pcs - 1)) - 1;
+	f->mask = BIT(fls(pcs - 1)) - 1;
 
 	/* determine the upper limit for our current DCB mode */
 	rss_i = interface->hw.mac.max_queues / pcs;
-	rss_i = 1 << (fls(rss_i) - 1);
+	rss_i = BIT(fls(rss_i) - 1);
 
 	/* set RSS mask and indices */
 	f = &interface->ring_feature[RING_F_RSS];
 	rss_i = min_t(u16, rss_i, f->limit);
 	f->indices = rss_i;
-	f->mask = (1 << fls(rss_i - 1)) - 1;
+	f->mask = BIT(fls(rss_i - 1)) - 1;
 
 	/* configure pause class to queue mapping */
 	for (i = 0; i < pcs; i++)
@@ -1523,7 +1551,7 @@ static bool fm10k_set_rss_queues(struct fm10k_intfc *interface)
 
 	/* record indices and power of 2 mask for RSS */
 	f->indices = rss_i;
-	f->mask = (1 << fls(rss_i - 1)) - 1;
+	f->mask = BIT(fls(rss_i - 1)) - 1;
 
 	interface->num_rx_queues = rss_i;
 	interface->num_tx_queues = rss_i;
@@ -1544,14 +1572,26 @@ static bool fm10k_set_rss_queues(struct fm10k_intfc *interface)
  **/
 static void fm10k_set_num_queues(struct fm10k_intfc *interface)
 {
-	/* Start with base case */
-	interface->num_rx_queues = 1;
-	interface->num_tx_queues = 1;
-
+	/* Attempt to setup QoS and RSS first */
 	if (fm10k_set_qos_queues(interface))
 		return;
 
+	/* If we don't have QoS, just fallback to only RSS. */
 	fm10k_set_rss_queues(interface);
+}
+
+/**
+ * fm10k_reset_num_queues - Reset the number of queues to zero
+ * @interface: board private structure
+ *
+ * This function should be called whenever we need to reset the number of
+ * queues after an error condition.
+ */
+static void fm10k_reset_num_queues(struct fm10k_intfc *interface)
+{
+	interface->num_tx_queues = 0;
+	interface->num_rx_queues = 0;
+	interface->num_q_vectors = 0;
 }
 
 /**
@@ -1600,6 +1640,7 @@ static int fm10k_alloc_q_vector(struct fm10k_intfc *interface,
 	q_vector->tx.ring = ring;
 	q_vector->tx.work_limit = FM10K_DEFAULT_TX_WORK;
 	q_vector->tx.itr = interface->tx_itr;
+	q_vector->tx.itr_scale = interface->hw.mac.itr_scale;
 	q_vector->tx.count = txr_count;
 
 	while (txr_count) {
@@ -1628,6 +1669,7 @@ static int fm10k_alloc_q_vector(struct fm10k_intfc *interface,
 	/* save Rx ring container info */
 	q_vector->rx.ring = ring;
 	q_vector->rx.itr = interface->rx_itr;
+	q_vector->rx.itr_scale = interface->hw.mac.itr_scale;
 	q_vector->rx.count = rxr_count;
 
 	while (rxr_count) {
@@ -1735,9 +1777,7 @@ static int fm10k_alloc_q_vectors(struct fm10k_intfc *interface)
 	return 0;
 
 err_out:
-	interface->num_tx_queues = 0;
-	interface->num_rx_queues = 0;
-	interface->num_q_vectors = 0;
+	fm10k_reset_num_queues(interface);
 
 	while (v_idx--)
 		fm10k_free_q_vector(interface, v_idx);
@@ -1757,9 +1797,7 @@ static void fm10k_free_q_vectors(struct fm10k_intfc *interface)
 {
 	int v_idx = interface->num_q_vectors;
 
-	interface->num_tx_queues = 0;
-	interface->num_rx_queues = 0;
-	interface->num_q_vectors = 0;
+	fm10k_reset_num_queues(interface);
 
 	while (v_idx--)
 		fm10k_free_q_vector(interface, v_idx);
@@ -1905,10 +1943,13 @@ static void fm10k_assign_rings(struct fm10k_intfc *interface)
 static void fm10k_init_reta(struct fm10k_intfc *interface)
 {
 	u16 i, rss_i = interface->ring_feature[RING_F_RSS].indices;
-	u32 reta, base;
+	struct net_device *netdev = interface->netdev;
+	u32 reta, *indir;
 
-	/* If the netdev is initialized we have to maintain table if possible */
-	if (interface->netdev->reg_state != NETREG_UNINITIALIZED) {
+	/* If the Rx flow indirection table has been configured manually, we
+	 * need to maintain it when possible.
+	 */
+	if (netif_is_rxfh_configured(interface->netdev)) {
 		for (i = FM10K_RETA_SIZE; i--;) {
 			reta = interface->reta[i];
 			if ((((reta << 24) >> 24) < rss_i) &&
@@ -1916,6 +1957,10 @@ static void fm10k_init_reta(struct fm10k_intfc *interface)
 			    (((reta <<  8) >> 24) < rss_i) &&
 			    (((reta)       >> 24) < rss_i))
 				continue;
+
+			/* this should never happen */
+			dev_err(&interface->pdev->dev,
+				"RSS indirection table assigned flows out of queue bounds. Reconfiguring.\n");
 			goto repopulate_reta;
 		}
 
@@ -1924,21 +1969,16 @@ static void fm10k_init_reta(struct fm10k_intfc *interface)
 	}
 
 repopulate_reta:
-	/* Populate the redirection table 4 entries at a time.  To do this
-	 * we are generating the results for n and n+2 and then interleaving
-	 * those with the results with n+1 and n+3.
-	 */
-	for (i = FM10K_RETA_SIZE; i--;) {
-		/* first pass generates n and n+2 */
-		base = ((i * 0x00040004) + 0x00020000) * rss_i;
-		reta = (base & 0x3F803F80) >> 7;
+	indir = kcalloc(fm10k_get_reta_size(netdev),
+			sizeof(indir[0]), GFP_KERNEL);
 
-		/* second pass generates n+1 and n+3 */
-		base += 0x00010001 * rss_i;
-		reta |= (base & 0x3F803F80) << 1;
+	/* generate redirection table using the default kernel policy */
+	for (i = 0; i < fm10k_get_reta_size(netdev); i++)
+		indir[i] = ethtool_rxfh_indir_default(i, rss_i);
 
-		interface->reta[i] = reta;
-	}
+	fm10k_write_reta(interface, indir);
+
+	kfree(indir);
 }
 
 /**
@@ -1961,13 +2001,16 @@ int fm10k_init_queueing_scheme(struct fm10k_intfc *interface)
 	if (err) {
 		dev_err(&interface->pdev->dev,
 			"Unable to initialize MSI-X capability\n");
-		return err;
+		goto err_init_msix;
 	}
 
 	/* Allocate memory for queues */
 	err = fm10k_alloc_q_vectors(interface);
-	if (err)
-		return err;
+	if (err) {
+		dev_err(&interface->pdev->dev,
+			"Unable to allocate queue vectors\n");
+		goto err_alloc_q_vectors;
+	}
 
 	/* Map rings to devices, and map devices to physical queues */
 	fm10k_assign_rings(interface);
@@ -1976,6 +2019,12 @@ int fm10k_init_queueing_scheme(struct fm10k_intfc *interface)
 	fm10k_init_reta(interface);
 
 	return 0;
+
+err_alloc_q_vectors:
+	fm10k_reset_msix_capability(interface);
+err_init_msix:
+	fm10k_reset_num_queues(interface);
+	return err;
 }
 
 /**

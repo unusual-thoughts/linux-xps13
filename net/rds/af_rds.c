@@ -277,6 +277,27 @@ static int rds_set_transport(struct rds_sock *rs, char __user *optval,
 	return rs->rs_transport ? 0 : -ENOPROTOOPT;
 }
 
+static int rds_enable_recvtstamp(struct sock *sk, char __user *optval,
+				 int optlen)
+{
+	int val, valbool;
+
+	if (optlen != sizeof(int))
+		return -EFAULT;
+
+	if (get_user(val, (int __user *)optval))
+		return -EFAULT;
+
+	valbool = val ? 1 : 0;
+
+	if (valbool)
+		sock_set_flag(sk, SOCK_RCVTSTAMP);
+	else
+		sock_reset_flag(sk, SOCK_RCVTSTAMP);
+
+	return 0;
+}
+
 static int rds_setsockopt(struct socket *sock, int level, int optname,
 			  char __user *optval, unsigned int optlen)
 {
@@ -310,6 +331,11 @@ static int rds_setsockopt(struct socket *sock, int level, int optname,
 	case SO_RDS_TRANSPORT:
 		lock_sock(sock->sk);
 		ret = rds_set_transport(rs, optval, optlen);
+		release_sock(sock->sk);
+		break;
+	case SO_TIMESTAMP:
+		lock_sock(sock->sk);
+		ret = rds_enable_recvtstamp(sock->sk, optval, optlen);
 		release_sock(sock->sk);
 		break;
 	default:
@@ -573,6 +599,7 @@ static void rds_exit(void)
 	rds_threads_exit();
 	rds_stats_exit();
 	rds_page_exit();
+	rds_bind_lock_destroy();
 	rds_info_deregister_func(RDS_INFO_SOCKETS, rds_sock_info);
 	rds_info_deregister_func(RDS_INFO_RECV_MESSAGES, rds_sock_inc_info);
 }
@@ -582,11 +609,14 @@ static int rds_init(void)
 {
 	int ret;
 
-	rds_bind_lock_init();
+	ret = rds_bind_lock_init();
+	if (ret)
+		goto out;
 
 	ret = rds_conn_init();
 	if (ret)
-		goto out;
+		goto out_bind;
+
 	ret = rds_threads_init();
 	if (ret)
 		goto out_conn;
@@ -620,6 +650,8 @@ out_conn:
 	rds_conn_exit();
 	rds_cong_exit();
 	rds_page_exit();
+out_bind:
+	rds_bind_lock_destroy();
 out:
 	return ret;
 }

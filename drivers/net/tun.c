@@ -187,6 +187,7 @@ struct tun_struct {
 #define TUN_USER_FEATURES (NETIF_F_HW_CSUM|NETIF_F_TSO_ECN|NETIF_F_TSO| \
 			  NETIF_F_TSO6|NETIF_F_UFO)
 
+	int			align;
 	int			vnet_hdr_sz;
 	int			sndbuf;
 	struct tap_filter	txflt;
@@ -621,7 +622,9 @@ static int tun_attach(struct tun_struct *tun, struct file *file, bool skip_filte
 
 	/* Re-attach the filter to persist device */
 	if (!skip_filter && (tun->filter_attached == true)) {
+		lock_sock(tfile->socket.sk);
 		err = sk_attach_filter(&tun->fprog, tfile->socket.sk);
+		release_sock(tfile->socket.sk);
 		if (!err)
 			goto out;
 	}
@@ -859,7 +862,8 @@ static netdev_tx_t tun_net_xmit(struct sk_buff *skb, struct net_device *dev)
 		goto drop;
 
 	if (skb->sk && sk_fullsock(skb->sk)) {
-		sock_tx_timestamp(skb->sk, &skb_shinfo(skb)->tx_flags);
+		sock_tx_timestamp(skb->sk, skb->sk->sk_tsflags,
+				  &skb_shinfo(skb)->tx_flags);
 		sw_tx_timestamp(skb);
 	}
 
@@ -934,6 +938,17 @@ static void tun_poll_controller(struct net_device *dev)
 	return;
 }
 #endif
+
+static void tun_set_headroom(struct net_device *dev, int new_hr)
+{
+	struct tun_struct *tun = netdev_priv(dev);
+
+	if (new_hr < NET_SKB_PAD)
+		new_hr = NET_SKB_PAD;
+
+	tun->align = new_hr;
+}
+
 static const struct net_device_ops tun_netdev_ops = {
 	.ndo_uninit		= tun_net_uninit,
 	.ndo_open		= tun_net_open,
@@ -945,6 +960,7 @@ static const struct net_device_ops tun_netdev_ops = {
 #ifdef CONFIG_NET_POLL_CONTROLLER
 	.ndo_poll_controller	= tun_poll_controller,
 #endif
+	.ndo_set_rx_headroom	= tun_set_headroom,
 };
 
 static const struct net_device_ops tap_netdev_ops = {
@@ -962,6 +978,7 @@ static const struct net_device_ops tap_netdev_ops = {
 	.ndo_poll_controller	= tun_poll_controller,
 #endif
 	.ndo_features_check	= passthru_features_check,
+	.ndo_set_rx_headroom	= tun_set_headroom,
 };
 
 static void tun_flow_init(struct tun_struct *tun)
@@ -1040,7 +1057,7 @@ static unsigned int tun_chr_poll(struct file *file, poll_table *wait)
 		mask |= POLLIN | POLLRDNORM;
 
 	if (sock_writeable(sk) ||
-	    (!test_and_set_bit(SOCK_ASYNC_NOSPACE, &sk->sk_socket->flags) &&
+	    (!test_and_set_bit(SOCKWQ_ASYNC_NOSPACE, &sk->sk_socket->flags) &&
 	     sock_writeable(sk)))
 		mask |= POLLOUT | POLLWRNORM;
 
@@ -1086,7 +1103,7 @@ static ssize_t tun_get_user(struct tun_struct *tun, struct tun_file *tfile,
 	struct tun_pi pi = { 0, cpu_to_be16(ETH_P_IP) };
 	struct sk_buff *skb;
 	size_t total_len = iov_iter_count(from);
-	size_t len = total_len, align = NET_SKB_PAD, linear;
+	size_t len = total_len, align = tun->align, linear;
 	struct virtio_net_hdr gso = { 0 };
 	int good_linear;
 	int copylen;
@@ -1094,6 +1111,9 @@ static ssize_t tun_get_user(struct tun_struct *tun, struct tun_file *tfile,
 	int err;
 	u32 rxhash;
 	ssize_t n;
+
+	if (!(tun->dev->flags & IFF_UP))
+		return -EIO;
 
 	if (!(tun->flags & IFF_NO_PI)) {
 		if (len < sizeof(pi))
@@ -1488,7 +1508,7 @@ static void tun_sock_write_space(struct sock *sk)
 	if (!sock_writeable(sk))
 		return;
 
-	if (!test_and_clear_bit(SOCK_ASYNC_NOSPACE, &sk->sk_socket->flags))
+	if (!test_and_clear_bit(SOCKWQ_ASYNC_NOSPACE, &sk->sk_socket->flags))
 		return;
 
 	wqueue = sk_sleep(sk);
@@ -1691,6 +1711,7 @@ static int tun_set_iff(struct net *net, struct file *file, struct ifreq *ifr)
 		tun->txflt.count = 0;
 		tun->vnet_hdr_sz = sizeof(struct virtio_net_hdr);
 
+		tun->align = NET_SKB_PAD;
 		tun->filter_attached = false;
 		tun->sndbuf = tfile->socket.sk->sk_sndbuf;
 
@@ -1804,7 +1825,9 @@ static void tun_detach_filter(struct tun_struct *tun, int n)
 
 	for (i = 0; i < n; i++) {
 		tfile = rtnl_dereference(tun->tfiles[i]);
+		lock_sock(tfile->socket.sk);
 		sk_detach_filter(tfile->socket.sk);
+		release_sock(tfile->socket.sk);
 	}
 
 	tun->filter_attached = false;
@@ -1817,7 +1840,9 @@ static int tun_attach_filter(struct tun_struct *tun)
 
 	for (i = 0; i < tun->numqueues; i++) {
 		tfile = rtnl_dereference(tun->tfiles[i]);
+		lock_sock(tfile->socket.sk);
 		ret = sk_attach_filter(&tun->fprog, tfile->socket.sk);
+		release_sock(tfile->socket.sk);
 		if (ret) {
 			tun_detach_filter(tun, i);
 			return ret;

@@ -47,8 +47,8 @@ static const char *i2c_adapter_names[] = {
 	"SMBus I801 adapter",
 	"i915 gmbus vga",
 	"i915 gmbus panel",
-	"i2c-designware-pci",
-	"i2c-designware-pci",
+	"Synopsys DesignWare I2C adapter",
+	"Synopsys DesignWare I2C adapter",
 };
 
 /* Keep this enum consistent with i2c_adapter_names */
@@ -494,6 +494,13 @@ static struct chromeos_laptop cr48 = {
 	},
 };
 
+static struct chromeos_laptop leon = {
+	.i2c_peripherals = {
+		/* Touchpad. */
+		{ .add = setup_cyapa_tp, I2C_ADAPTER_DESIGNWARE_0 },
+	},
+};
+
 #define _CBDD(board_) \
 	.callback = chromeos_laptop_dmi_matched, \
 	.driver_data = (void *)&board_
@@ -580,6 +587,14 @@ static struct dmi_system_id chromeos_laptop_dmi_table[] __initdata = {
 			DMI_MATCH(DMI_PRODUCT_NAME, "Mario"),
 		},
 		_CBDD(cr48),
+	},
+	{
+		.ident = "Leon",
+		.matches = {
+			DMI_MATCH(DMI_BIOS_VENDOR, "coreboot"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "Leon"),
+		},
+		_CBDD(leon),
 	},
 	{ }
 };

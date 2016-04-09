@@ -15,16 +15,6 @@ struct tracer;
 struct dentry;
 struct bpf_prog;
 
-struct trace_print_flags {
-	unsigned long		mask;
-	const char		*name;
-};
-
-struct trace_print_flags_u64 {
-	unsigned long long	mask;
-	const char		*name;
-};
-
 const char *trace_print_flags_seq(struct trace_seq *p, const char *delim,
 				  unsigned long flags,
 				  const struct trace_print_flags *flag_array);
@@ -168,13 +158,12 @@ struct ring_buffer_event *
 trace_current_buffer_lock_reserve(struct ring_buffer **current_buffer,
 				  int type, unsigned long len,
 				  unsigned long flags, int pc);
-void trace_current_buffer_unlock_commit(struct ring_buffer *buffer,
-					struct ring_buffer_event *event,
-					unsigned long flags, int pc);
-void trace_buffer_unlock_commit(struct ring_buffer *buffer,
+void trace_buffer_unlock_commit(struct trace_array *tr,
+				struct ring_buffer *buffer,
 				struct ring_buffer_event *event,
 				unsigned long flags, int pc);
-void trace_buffer_unlock_commit_regs(struct ring_buffer *buffer,
+void trace_buffer_unlock_commit_regs(struct trace_array *tr,
+				     struct ring_buffer *buffer,
 				     struct ring_buffer_event *event,
 				     unsigned long flags, int pc,
 				     struct pt_regs *regs);
@@ -329,6 +318,7 @@ enum {
 	EVENT_FILE_FL_SOFT_DISABLED_BIT,
 	EVENT_FILE_FL_TRIGGER_MODE_BIT,
 	EVENT_FILE_FL_TRIGGER_COND_BIT,
+	EVENT_FILE_FL_PID_FILTER_BIT,
 };
 
 /*
@@ -342,6 +332,7 @@ enum {
  *                   tracepoint may be enabled)
  *  TRIGGER_MODE  - When set, invoke the triggers associated with the event
  *  TRIGGER_COND  - When set, one or more triggers has an associated filter
+ *  PID_FILTER    - When set, the event is filtered based on pid
  */
 enum {
 	EVENT_FILE_FL_ENABLED		= (1 << EVENT_FILE_FL_ENABLED_BIT),
@@ -352,6 +343,7 @@ enum {
 	EVENT_FILE_FL_SOFT_DISABLED	= (1 << EVENT_FILE_FL_SOFT_DISABLED_BIT),
 	EVENT_FILE_FL_TRIGGER_MODE	= (1 << EVENT_FILE_FL_TRIGGER_MODE_BIT),
 	EVENT_FILE_FL_TRIGGER_COND	= (1 << EVENT_FILE_FL_TRIGGER_COND_BIT),
+	EVENT_FILE_FL_PID_FILTER	= (1 << EVENT_FILE_FL_PID_FILTER_BIT),
 };
 
 struct trace_event_file {
@@ -428,7 +420,10 @@ extern int call_filter_check_discard(struct trace_event_call *call, void *rec,
 extern enum event_trigger_type event_triggers_call(struct trace_event_file *file,
 						   void *rec);
 extern void event_triggers_post_call(struct trace_event_file *file,
-				     enum event_trigger_type tt);
+				     enum event_trigger_type tt,
+				     void *rec);
+
+bool trace_event_ignore_this_pid(struct trace_event_file *trace_file);
 
 /**
  * trace_trigger_soft_disabled - do triggers and test if soft disabled
@@ -449,6 +444,8 @@ trace_trigger_soft_disabled(struct trace_event_file *file)
 			event_triggers_call(file, NULL);
 		if (eflags & EVENT_FILE_FL_SOFT_DISABLED)
 			return true;
+		if (eflags & EVENT_FILE_FL_PID_FILTER)
+			return trace_event_ignore_this_pid(file);
 	}
 	return false;
 }
@@ -508,10 +505,10 @@ event_trigger_unlock_commit(struct trace_event_file *file,
 	enum event_trigger_type tt = ETT_NONE;
 
 	if (!__event_trigger_test_discard(file, buffer, event, entry, &tt))
-		trace_buffer_unlock_commit(buffer, event, irq_flags, pc);
+		trace_buffer_unlock_commit(file->tr, buffer, event, irq_flags, pc);
 
 	if (tt)
-		event_triggers_post_call(file, tt);
+		event_triggers_post_call(file, tt, entry);
 }
 
 /**
@@ -540,11 +537,11 @@ event_trigger_unlock_commit_regs(struct trace_event_file *file,
 	enum event_trigger_type tt = ETT_NONE;
 
 	if (!__event_trigger_test_discard(file, buffer, event, entry, &tt))
-		trace_buffer_unlock_commit_regs(buffer, event,
+		trace_buffer_unlock_commit_regs(file->tr, buffer, event,
 						irq_flags, pc, regs);
 
 	if (tt)
-		event_triggers_post_call(file, tt);
+		event_triggers_post_call(file, tt, entry);
 }
 
 #ifdef CONFIG_BPF_EVENTS
@@ -562,6 +559,8 @@ enum {
 	FILTER_DYN_STRING,
 	FILTER_PTR_STRING,
 	FILTER_TRACE_FN,
+	FILTER_COMM,
+	FILTER_CPU,
 };
 
 extern int trace_event_raw_init(struct trace_event_call *call);
@@ -570,6 +569,7 @@ extern int trace_define_field(struct trace_event_call *call, const char *type,
 			      int is_signed, int filter_type);
 extern int trace_add_event_call(struct trace_event_call *call);
 extern int trace_remove_event_call(struct trace_event_call *call);
+extern int trace_event_get_offsets(struct trace_event_call *call);
 
 #define is_signed_type(type)	(((type)(-1)) < (type)1)
 
@@ -606,15 +606,15 @@ extern void perf_trace_del(struct perf_event *event, int flags);
 extern int  ftrace_profile_set_filter(struct perf_event *event, int event_id,
 				     char *filter_str);
 extern void ftrace_profile_free_filter(struct perf_event *event);
-extern void *perf_trace_buf_prepare(int size, unsigned short type,
-				    struct pt_regs **regs, int *rctxp);
+void perf_trace_buf_update(void *record, u16 type);
+void *perf_trace_buf_alloc(int size, struct pt_regs **regs, int *rctxp);
 
 static inline void
-perf_trace_buf_submit(void *raw_data, int size, int rctx, u64 addr,
+perf_trace_buf_submit(void *raw_data, int size, int rctx, u16 type,
 		       u64 count, struct pt_regs *regs, void *head,
 		       struct task_struct *task)
 {
-	perf_tp_event(addr, count, raw_data, size, regs, head, rctx, task);
+	perf_tp_event(type, count, raw_data, size, regs, head, rctx, task);
 }
 #endif
 

@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2015, Intel Corp.
+ * Copyright (C) 2000 - 2016, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -260,6 +260,10 @@
 
 #define ACPI_IS_MISALIGNED(value)           (((acpi_size) value) & (sizeof(acpi_size)-1))
 
+/* Generic (power-of-two) rounding */
+
+#define ACPI_IS_POWER_OF_TWO(a)             (((a) & ((a) - 1)) == 0)
+
 /*
  * Bitmask creation
  * Bit positions start at zero.
@@ -283,10 +287,10 @@
 /* Generic bitfield macros and masks */
 
 #define ACPI_GET_BITS(source_ptr, position, mask) \
-	((*source_ptr >> position) & mask)
+	((*(source_ptr) >> (position)) & (mask))
 
 #define ACPI_SET_BITS(target_ptr, position, mask, value) \
-	(*target_ptr |= ((value & mask) << position))
+	(*(target_ptr) |= (((value) & (mask)) << (position)))
 
 #define ACPI_1BIT_MASK      0x00000001
 #define ACPI_2BIT_MASK      0x00000003
@@ -398,17 +402,6 @@
 #define ACPI_HW_OPTIONAL_FUNCTION(addr)     addr
 #else
 #define ACPI_HW_OPTIONAL_FUNCTION(addr)     NULL
-#endif
-
-/*
- * Some code only gets executed when the debugger is built in.
- * Note that this is entirely independent of whether the
- * DEBUG_PRINT stuff (set by ACPI_DEBUG_OUTPUT) is on, or not.
- */
-#ifdef ACPI_DEBUGGER
-#define ACPI_DEBUGGER_EXEC(a)           a
-#else
-#define ACPI_DEBUGGER_EXEC(a)
 #endif
 
 /*

@@ -198,7 +198,7 @@ static int adf_copy_key_value_data(struct adf_accel_dev *accel_dev,
 			goto out_err;
 		}
 
-		params_head = section_head->params;
+		params_head = section.params;
 
 		while (params_head) {
 			if (copy_from_user(&key_val, (void __user *)params_head,
@@ -255,12 +255,9 @@ out:
 
 static int adf_ctl_is_device_in_use(int id)
 {
-	struct list_head *itr, *head = adf_devmgr_get_head();
+	struct adf_accel_dev *dev;
 
-	list_for_each(itr, head) {
-		struct adf_accel_dev *dev =
-				list_entry(itr, struct adf_accel_dev, list);
-
+	list_for_each_entry(dev, adf_devmgr_get_head(), list) {
 		if (id == dev->accel_id || id == ADF_CFG_ALL_DEVICES) {
 			if (adf_devmgr_in_reset(dev) || adf_dev_in_use(dev)) {
 				dev_info(&GET_DEV(dev),
@@ -275,23 +272,30 @@ static int adf_ctl_is_device_in_use(int id)
 
 static int adf_ctl_stop_devices(uint32_t id)
 {
-	struct list_head *itr, *head = adf_devmgr_get_head();
+	struct adf_accel_dev *accel_dev;
 	int ret = 0;
 
-	list_for_each(itr, head) {
-		struct adf_accel_dev *accel_dev =
-				list_entry(itr, struct adf_accel_dev, list);
+	list_for_each_entry(accel_dev, adf_devmgr_get_head(), list) {
 		if (id == accel_dev->accel_id || id == ADF_CFG_ALL_DEVICES) {
 			if (!adf_dev_started(accel_dev))
 				continue;
 
-			if (adf_dev_stop(accel_dev)) {
-				dev_err(&GET_DEV(accel_dev),
-					"Failed to stop qat_dev%d\n", id);
-				ret = -EFAULT;
-			} else {
-				adf_dev_shutdown(accel_dev);
-			}
+			/* First stop all VFs */
+			if (!accel_dev->is_vf)
+				continue;
+
+			adf_dev_stop(accel_dev);
+			adf_dev_shutdown(accel_dev);
+		}
+	}
+
+	list_for_each_entry(accel_dev, adf_devmgr_get_head(), list) {
+		if (id == accel_dev->accel_id || id == ADF_CFG_ALL_DEVICES) {
+			if (!adf_dev_started(accel_dev))
+				continue;
+
+			adf_dev_stop(accel_dev);
+			adf_dev_shutdown(accel_dev);
 		}
 	}
 	return ret;
@@ -342,12 +346,10 @@ static int adf_ctl_ioctl_dev_start(struct file *fp, unsigned int cmd,
 	if (ret)
 		return ret;
 
+	ret = -ENODEV;
 	accel_dev = adf_devmgr_get_dev_by_id(ctl_data->device_id);
-	if (!accel_dev) {
-		pr_err("QAT: Device %d not found\n", ctl_data->device_id);
-		ret = -ENODEV;
+	if (!accel_dev)
 		goto out;
-	}
 
 	if (!adf_dev_started(accel_dev)) {
 		dev_info(&GET_DEV(accel_dev),
@@ -463,9 +465,6 @@ static int __init adf_register_ctl_device_driver(void)
 {
 	mutex_init(&adf_ctl_lock);
 
-	if (qat_algs_init())
-		goto err_algs_init;
-
 	if (adf_chr_drv_create())
 		goto err_chr_dev;
 
@@ -482,8 +481,6 @@ err_crypto_register:
 err_aer:
 	adf_chr_drv_destroy();
 err_chr_dev:
-	qat_algs_exit();
-err_algs_init:
 	mutex_destroy(&adf_ctl_lock);
 	return -EFAULT;
 }
@@ -493,7 +490,6 @@ static void __exit adf_unregister_ctl_device_driver(void)
 	adf_chr_drv_destroy();
 	adf_exit_aer();
 	qat_crypto_unregister();
-	qat_algs_exit();
 	adf_clean_vf_map(false);
 	mutex_destroy(&adf_ctl_lock);
 }

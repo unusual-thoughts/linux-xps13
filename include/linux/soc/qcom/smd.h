@@ -9,6 +9,14 @@ struct qcom_smd_channel;
 struct qcom_smd_lookup;
 
 /**
+ * struct qcom_smd_id - struct used for matching a smd device
+ * @name:	name of the channel
+ */
+struct qcom_smd_id {
+	char name[20];
+};
+
+/**
  * struct qcom_smd_device - smd device struct
  * @dev:	the device struct
  * @channel:	handle to the smd channel for this device
@@ -18,9 +26,12 @@ struct qcom_smd_device {
 	struct qcom_smd_channel *channel;
 };
 
+typedef int (*qcom_smd_cb_t)(struct qcom_smd_device *, const void *, size_t);
+
 /**
  * struct qcom_smd_driver - smd driver struct
  * @driver:	underlying device driver
+ * @smd_match_table: static channel match table
  * @probe:	invoked when the smd channel is found
  * @remove:	invoked when the smd channel is closed
  * @callback:	invoked when an inbound message is received on the channel,
@@ -29,9 +40,11 @@ struct qcom_smd_device {
  */
 struct qcom_smd_driver {
 	struct device_driver driver;
+	const struct qcom_smd_id *smd_match_table;
+
 	int (*probe)(struct qcom_smd_device *dev);
 	void (*remove)(struct qcom_smd_device *dev);
-	int (*callback)(struct qcom_smd_device *, const void *, size_t);
+	qcom_smd_cb_t callback;
 };
 
 int qcom_smd_driver_register(struct qcom_smd_driver *drv);
@@ -42,5 +55,9 @@ void qcom_smd_driver_unregister(struct qcom_smd_driver *drv);
 		      qcom_smd_driver_unregister)
 
 int qcom_smd_send(struct qcom_smd_channel *channel, const void *data, int len);
+
+struct qcom_smd_channel *qcom_smd_open_channel(struct qcom_smd_device *sdev,
+					       const char *name,
+					       qcom_smd_cb_t cb);
 
 #endif

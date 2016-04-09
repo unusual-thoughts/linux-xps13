@@ -73,6 +73,7 @@ static int __vlan_vid_add(struct net_device *dev, struct net_bridge *br,
 			  u16 vid, u16 flags)
 {
 	struct switchdev_obj_port_vlan v = {
+		.obj.orig_dev = dev,
 		.obj.id = SWITCHDEV_OBJ_ID_PORT_VLAN,
 		.flags = flags,
 		.vid_begin = vid,
@@ -120,6 +121,7 @@ static int __vlan_vid_del(struct net_device *dev, struct net_bridge *br,
 			  u16 vid)
 {
 	struct switchdev_obj_port_vlan v = {
+		.obj.orig_dev = dev,
 		.obj.id = SWITCHDEV_OBJ_ID_PORT_VLAN,
 		.vid_begin = vid,
 		.vid_end = vid,
@@ -180,11 +182,11 @@ static void br_vlan_put_master(struct net_bridge_vlan *masterv)
  * devices. There are four possible calls to this function in terms of the
  * vlan entry type:
  * 1. vlan is being added on a port (no master flags, global entry exists)
- * 2. vlan is being added on a bridge (both master and brvlan flags)
+ * 2. vlan is being added on a bridge (both master and brentry flags)
  * 3. vlan is being added on a port, but a global entry didn't exist which
- *    is being created right now (master flag set, brvlan flag unset), the
+ *    is being created right now (master flag set, brentry flag unset), the
  *    global entry is used for global per-vlan features, but not for filtering
- * 4. same as 3 but with both master and brvlan flags set so the entry
+ * 4. same as 3 but with both master and brentry flags set so the entry
  *    will be used for filtering in both the port and the bridge
  */
 static int __vlan_add(struct net_bridge_vlan *v, u16 flags)
@@ -482,7 +484,7 @@ bool br_should_learn(struct net_bridge_port *p, struct sk_buff *skb, u16 *vid)
 	if (!br->vlan_enabled)
 		return true;
 
-	vg = nbp_vlan_group(p);
+	vg = nbp_vlan_group_rcu(p);
 	if (!vg || !vg->num_vlans)
 		return false;
 
@@ -624,8 +626,20 @@ void br_recalculate_fwd_mask(struct net_bridge *br)
 
 int __br_vlan_filter_toggle(struct net_bridge *br, unsigned long val)
 {
+	struct switchdev_attr attr = {
+		.orig_dev = br->dev,
+		.id = SWITCHDEV_ATTR_ID_BRIDGE_VLAN_FILTERING,
+		.flags = SWITCHDEV_F_SKIP_EOPNOTSUPP,
+		.u.vlan_filtering = val,
+	};
+	int err;
+
 	if (br->vlan_enabled == val)
 		return 0;
+
+	err = switchdev_port_attr_set(br->dev, &attr);
+	if (err && err != -EOPNOTSUPP)
+		return err;
 
 	br->vlan_enabled = val;
 	br_manage_promisc(br);
@@ -637,13 +651,15 @@ int __br_vlan_filter_toggle(struct net_bridge *br, unsigned long val)
 
 int br_vlan_filter_toggle(struct net_bridge *br, unsigned long val)
 {
+	int err;
+
 	if (!rtnl_trylock())
 		return restart_syscall();
 
-	__br_vlan_filter_toggle(br, val);
+	err = __br_vlan_filter_toggle(br, val);
 	rtnl_unlock();
 
-	return 0;
+	return err;
 }
 
 int __br_vlan_set_proto(struct net_bridge *br, __be16 proto)
@@ -891,12 +907,22 @@ err_rhtbl:
 
 int nbp_vlan_init(struct net_bridge_port *p)
 {
+	struct switchdev_attr attr = {
+		.orig_dev = p->br->dev,
+		.id = SWITCHDEV_ATTR_ID_BRIDGE_VLAN_FILTERING,
+		.flags = SWITCHDEV_F_SKIP_EOPNOTSUPP,
+		.u.vlan_filtering = p->br->vlan_enabled,
+	};
 	struct net_bridge_vlan_group *vg;
 	int ret = -ENOMEM;
 
 	vg = kzalloc(sizeof(struct net_bridge_vlan_group), GFP_KERNEL);
 	if (!vg)
 		goto out;
+
+	ret = switchdev_port_attr_set(p->dev, &attr);
+	if (ret && ret != -EOPNOTSUPP)
+		goto err_vlan_enabled;
 
 	ret = rhashtable_init(&vg->vlan_hash, &br_vlan_rht_params);
 	if (ret)
@@ -914,7 +940,10 @@ out:
 	return ret;
 
 err_vlan_add:
+	RCU_INIT_POINTER(p->vlgrp, NULL);
+	synchronize_rcu();
 	rhashtable_destroy(&vg->vlan_hash);
+err_vlan_enabled:
 err_rhtbl:
 	kfree(vg);
 
@@ -926,6 +955,13 @@ err_rhtbl:
  */
 int nbp_vlan_add(struct net_bridge_port *port, u16 vid, u16 flags)
 {
+	struct switchdev_obj_port_vlan v = {
+		.obj.orig_dev = port->dev,
+		.obj.id = SWITCHDEV_OBJ_ID_PORT_VLAN,
+		.flags = flags,
+		.vid_begin = vid,
+		.vid_end = vid,
+	};
 	struct net_bridge_vlan *vlan;
 	int ret;
 
@@ -933,6 +969,10 @@ int nbp_vlan_add(struct net_bridge_port *port, u16 vid, u16 flags)
 
 	vlan = br_vlan_find(nbp_vlan_group(port), vid);
 	if (vlan) {
+		/* Pass the flags to the hardware bridge */
+		ret = switchdev_port_obj_add(port->dev, &v.obj);
+		if (ret && ret != -EOPNOTSUPP)
+			return ret;
 		__vlan_add_flags(vlan, flags);
 		return 0;
 	}

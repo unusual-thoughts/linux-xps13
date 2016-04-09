@@ -27,6 +27,7 @@
 #include <linux/random.h>
 #include <linux/moduleloader.h>
 #include <linux/bpf.h>
+#include <linux/frame.h>
 
 #include <asm/unaligned.h>
 
@@ -92,6 +93,7 @@ struct bpf_prog *bpf_prog_alloc(unsigned int size, gfp_t gfp_extra_flags)
 
 	fp->pages = size / PAGE_SIZE;
 	fp->aux = aux;
+	fp->aux->prog = fp;
 
 	return fp;
 }
@@ -116,6 +118,7 @@ struct bpf_prog *bpf_prog_realloc(struct bpf_prog *fp_old, unsigned int size,
 
 		memcpy(fp, fp_old, fp_old->pages * PAGE_SIZE);
 		fp->pages = size / PAGE_SIZE;
+		fp->aux->prog = fp;
 
 		/* We keep fp->aux from fp_old around in the new
 		 * reallocated structure.
@@ -303,10 +306,6 @@ static unsigned int __bpf_prog_run(void *ctx, const struct bpf_insn *insn)
 
 	FP = (u64) (unsigned long) &stack[ARRAY_SIZE(stack)];
 	ARG1 = (u64) (unsigned long) ctx;
-
-	/* Registers used in classic BPF programs need to be reset first. */
-	regs[BPF_REG_A] = 0;
-	regs[BPF_REG_X] = 0;
 
 select_insn:
 	goto *jumptable[insn->code];
@@ -651,6 +650,7 @@ load_byte:
 		WARN_RATELIMIT(1, "unknown opcode %02x\n", insn->code);
 		return 0;
 }
+STACK_FRAME_NON_STANDARD(__bpf_prog_run); /* jump table */
 
 bool bpf_prog_array_compatible(struct bpf_array *array,
 			       const struct bpf_prog *fp)
@@ -726,7 +726,6 @@ void bpf_prog_free(struct bpf_prog *fp)
 	struct bpf_prog_aux *aux = fp->aux;
 
 	INIT_WORK(&aux->work, bpf_prog_free_deferred);
-	aux->prog = fp;
 	schedule_work(&aux->work);
 }
 EXPORT_SYMBOL_GPL(bpf_prog_free);

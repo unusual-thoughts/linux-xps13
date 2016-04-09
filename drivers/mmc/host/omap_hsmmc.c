@@ -351,15 +351,14 @@ static int omap_hsmmc_set_pbias(struct omap_hsmmc_host *host, bool power_on,
 	return 0;
 }
 
-static int omap_hsmmc_set_power(struct device *dev, int power_on, int vdd)
+static int omap_hsmmc_set_power(struct omap_hsmmc_host *host, int power_on,
+				int vdd)
 {
-	struct omap_hsmmc_host *host =
-		platform_get_drvdata(to_platform_device(dev));
 	struct mmc_host *mmc = host->mmc;
 	int ret = 0;
 
 	if (mmc_pdata(host)->set_power)
-		return mmc_pdata(host)->set_power(dev, power_on, vdd);
+		return mmc_pdata(host)->set_power(host->dev, power_on, vdd);
 
 	/*
 	 * If we don't see a Vcc regulator, assume it's a fixed
@@ -369,7 +368,7 @@ static int omap_hsmmc_set_power(struct device *dev, int power_on, int vdd)
 		return 0;
 
 	if (mmc_pdata(host)->before_set_reg)
-		mmc_pdata(host)->before_set_reg(dev, power_on, vdd);
+		mmc_pdata(host)->before_set_reg(host->dev, power_on, vdd);
 
 	ret = omap_hsmmc_set_pbias(host, false, 0);
 	if (ret)
@@ -403,7 +402,7 @@ static int omap_hsmmc_set_power(struct device *dev, int power_on, int vdd)
 	}
 
 	if (mmc_pdata(host)->after_set_reg)
-		mmc_pdata(host)->after_set_reg(dev, power_on, vdd);
+		mmc_pdata(host)->after_set_reg(host->dev, power_on, vdd);
 
 	return 0;
 
@@ -503,8 +502,11 @@ static int omap_hsmmc_reg_get(struct omap_hsmmc_host *host)
 	host->pbias = devm_regulator_get_optional(host->dev, "pbias");
 	if (IS_ERR(host->pbias)) {
 		ret = PTR_ERR(host->pbias);
-		if ((ret != -ENODEV) && host->dev->of_node)
+		if ((ret != -ENODEV) && host->dev->of_node) {
+			dev_err(host->dev,
+			"SD card detect fail? enable CONFIG_REGULATOR_PBIAS\n");
 			return ret;
+		}
 		dev_dbg(host->dev, "unable to get pbias regulator %ld\n",
 			PTR_ERR(host->pbias));
 		host->pbias = NULL;
@@ -965,8 +967,6 @@ static void omap_hsmmc_request_done(struct omap_hsmmc_host *host, struct mmc_req
 		return;
 	host->mrq = NULL;
 	mmc_request_done(host->mmc, mrq);
-	pm_runtime_mark_last_busy(host->dev);
-	pm_runtime_put_autosuspend(host->dev);
 }
 
 /*
@@ -1247,17 +1247,15 @@ static int omap_hsmmc_switch_opcond(struct omap_hsmmc_host *host, int vdd)
 	int ret;
 
 	/* Disable the clocks */
-	pm_runtime_put_sync(host->dev);
 	if (host->dbclk)
 		clk_disable_unprepare(host->dbclk);
 
 	/* Turn the power off */
-	ret = omap_hsmmc_set_power(host->dev, 0, 0);
+	ret = omap_hsmmc_set_power(host, 0, 0);
 
 	/* Turn the power ON with given VDD 1.8 or 3.0v */
 	if (!ret)
-		ret = omap_hsmmc_set_power(host->dev, 1, vdd);
-	pm_runtime_get_sync(host->dev);
+		ret = omap_hsmmc_set_power(host, 1, vdd);
 	if (host->dbclk)
 		clk_prepare_enable(host->dbclk);
 
@@ -1365,8 +1363,6 @@ static void omap_hsmmc_dma_callback(void *param)
 
 		host->mrq = NULL;
 		mmc_request_done(host->mmc, mrq);
-		pm_runtime_mark_last_busy(host->dev);
-		pm_runtime_put_autosuspend(host->dev);
 	}
 }
 
@@ -1599,7 +1595,6 @@ static void omap_hsmmc_request(struct mmc_host *mmc, struct mmc_request *req)
 
 	BUG_ON(host->req_in_progress);
 	BUG_ON(host->dma_ch != -1);
-	pm_runtime_get_sync(host->dev);
 	if (host->protect_card) {
 		if (host->reqs_blocked < 3) {
 			/*
@@ -1616,8 +1611,6 @@ static void omap_hsmmc_request(struct mmc_host *mmc, struct mmc_request *req)
 			req->data->error = -EBADF;
 		req->cmd->retries = 0;
 		mmc_request_done(mmc, req);
-		pm_runtime_mark_last_busy(host->dev);
-		pm_runtime_put_autosuspend(host->dev);
 		return;
 	} else if (host->reqs_blocked)
 		host->reqs_blocked = 0;
@@ -1631,8 +1624,6 @@ static void omap_hsmmc_request(struct mmc_host *mmc, struct mmc_request *req)
 			req->data->error = err;
 		host->mrq = NULL;
 		mmc_request_done(mmc, req);
-		pm_runtime_mark_last_busy(host->dev);
-		pm_runtime_put_autosuspend(host->dev);
 		return;
 	}
 	if (req->sbc && !(host->flags & AUTO_CMD23)) {
@@ -1650,15 +1641,13 @@ static void omap_hsmmc_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 	struct omap_hsmmc_host *host = mmc_priv(mmc);
 	int do_send_init_stream = 0;
 
-	pm_runtime_get_sync(host->dev);
-
 	if (ios->power_mode != host->power_mode) {
 		switch (ios->power_mode) {
 		case MMC_POWER_OFF:
-			omap_hsmmc_set_power(host->dev, 0, 0);
+			omap_hsmmc_set_power(host, 0, 0);
 			break;
 		case MMC_POWER_UP:
-			omap_hsmmc_set_power(host->dev, 1, ios->vdd);
+			omap_hsmmc_set_power(host, 1, ios->vdd);
 			break;
 		case MMC_POWER_ON:
 			do_send_init_stream = 1;
@@ -1695,8 +1684,6 @@ static void omap_hsmmc_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 		send_init_stream(host);
 
 	omap_hsmmc_set_bus_mode(host);
-
-	pm_runtime_put_autosuspend(host->dev);
 }
 
 static int omap_hsmmc_get_cd(struct mmc_host *mmc)
@@ -2159,7 +2146,7 @@ static int omap_hsmmc_probe(struct platform_device *pdev)
 						 &rx_req, &pdev->dev, "rx");
 
 	if (!host->rx_chan) {
-		dev_err(mmc_dev(host->mmc), "unable to obtain RX DMA engine channel %u\n", rx_req);
+		dev_err(mmc_dev(host->mmc), "unable to obtain RX DMA engine channel\n");
 		ret = -ENXIO;
 		goto err_irq;
 	}
@@ -2169,7 +2156,7 @@ static int omap_hsmmc_probe(struct platform_device *pdev)
 						 &tx_req, &pdev->dev, "tx");
 
 	if (!host->tx_chan) {
-		dev_err(mmc_dev(host->mmc), "unable to obtain TX DMA engine channel %u\n", tx_req);
+		dev_err(mmc_dev(host->mmc), "unable to obtain TX DMA engine channel\n");
 		ret = -ENXIO;
 		goto err_irq;
 	}
@@ -2232,6 +2219,7 @@ err_irq:
 		dma_release_channel(host->tx_chan);
 	if (host->rx_chan)
 		dma_release_channel(host->rx_chan);
+	pm_runtime_dont_use_autosuspend(host->dev);
 	pm_runtime_put_sync(host->dev);
 	pm_runtime_disable(host->dev);
 	if (host->dbclk)
@@ -2250,11 +2238,10 @@ static int omap_hsmmc_remove(struct platform_device *pdev)
 	pm_runtime_get_sync(host->dev);
 	mmc_remove_host(host->mmc);
 
-	if (host->tx_chan)
-		dma_release_channel(host->tx_chan);
-	if (host->rx_chan)
-		dma_release_channel(host->rx_chan);
+	dma_release_channel(host->tx_chan);
+	dma_release_channel(host->rx_chan);
 
+	pm_runtime_dont_use_autosuspend(host->dev);
 	pm_runtime_put_sync(host->dev);
 	pm_runtime_disable(host->dev);
 	device_init_wakeup(&pdev->dev, false);

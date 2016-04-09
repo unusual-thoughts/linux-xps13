@@ -310,6 +310,7 @@ mrf24j40_short_reg_writeable(struct device *dev, unsigned int reg)
 	case REG_TRISGPIO:
 	case REG_GPIO:
 	case REG_RFCTL:
+	case REG_SECCR2:
 	case REG_SLPACK:
 	case REG_BBREG0:
 	case REG_BBREG1:
@@ -1382,7 +1383,6 @@ static struct spi_driver mrf24j40_driver = {
 	.driver = {
 		.of_match_table = of_match_ptr(mrf24j40_of_match),
 		.name = "mrf24j40",
-		.owner = THIS_MODULE,
 	},
 	.id_table = mrf24j40_ids,
 	.probe = mrf24j40_probe,

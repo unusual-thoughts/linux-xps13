@@ -60,9 +60,14 @@ MODULE_ALIAS("rcupdate");
 #endif
 #define MODULE_PARAM_PREFIX "rcupdate."
 
+#ifndef CONFIG_TINY_RCU
 module_param(rcu_expedited, int, 0);
+module_param(rcu_normal, int, 0);
+static int rcu_normal_after_boot;
+module_param(rcu_normal_after_boot, int, 0);
+#endif /* #ifndef CONFIG_TINY_RCU */
 
-#if defined(CONFIG_DEBUG_LOCK_ALLOC) && defined(CONFIG_PREEMPT_COUNT)
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
 /**
  * rcu_read_lock_sched_held() - might we be in RCU-sched read-side critical section?
  *
@@ -106,12 +111,24 @@ int rcu_read_lock_sched_held(void)
 		return 0;
 	if (debug_locks)
 		lockdep_opinion = lock_is_held(&rcu_sched_lock_map);
-	return lockdep_opinion || preempt_count() != 0 || irqs_disabled();
+	return lockdep_opinion || !preemptible();
 }
 EXPORT_SYMBOL(rcu_read_lock_sched_held);
 #endif
 
 #ifndef CONFIG_TINY_RCU
+
+/*
+ * Should expedited grace-period primitives always fall back to their
+ * non-expedited counterparts?  Intended for use within RCU.  Note
+ * that if the user specifies both rcu_expedited and rcu_normal, then
+ * rcu_normal wins.
+ */
+bool rcu_gp_is_normal(void)
+{
+	return READ_ONCE(rcu_normal);
+}
+EXPORT_SYMBOL_GPL(rcu_gp_is_normal);
 
 static atomic_t rcu_expedited_nesting =
 	ATOMIC_INIT(IS_ENABLED(CONFIG_RCU_EXPEDITE_BOOT) ? 1 : 0);
@@ -157,8 +174,6 @@ void rcu_unexpedite_gp(void)
 }
 EXPORT_SYMBOL_GPL(rcu_unexpedite_gp);
 
-#endif /* #ifndef CONFIG_TINY_RCU */
-
 /*
  * Inform RCU of the end of the in-kernel boot sequence.
  */
@@ -166,7 +181,11 @@ void rcu_end_inkernel_boot(void)
 {
 	if (IS_ENABLED(CONFIG_RCU_EXPEDITE_BOOT))
 		rcu_unexpedite_gp();
+	if (rcu_normal_after_boot)
+		WRITE_ONCE(rcu_normal, 1);
 }
+
+#endif /* #ifndef CONFIG_TINY_RCU */
 
 #ifdef CONFIG_PREEMPT_RCU
 
@@ -534,7 +553,7 @@ static void rcu_spawn_tasks_kthread(void);
  * Post an RCU-tasks callback.  First call must be from process context
  * after the scheduler if fully operational.
  */
-void call_rcu_tasks(struct rcu_head *rhp, void (*func)(struct rcu_head *rhp))
+void call_rcu_tasks(struct rcu_head *rhp, rcu_callback_t func)
 {
 	unsigned long flags;
 	bool needwake;

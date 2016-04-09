@@ -131,11 +131,7 @@
 #endif
 
 #ifndef cpu_has_rixi
-# ifdef CONFIG_64BIT
-# define cpu_has_rixi		(cpu_data[0].options & MIPS_CPU_RIXI)
-# else /* CONFIG_32BIT */
-# define cpu_has_rixi		((cpu_data[0].options & MIPS_CPU_RIXI) && !cpu_has_64bits)
-# endif
+#define cpu_has_rixi		(cpu_data[0].options & MIPS_CPU_RIXI)
 #endif
 
 #ifndef cpu_has_mmips
@@ -311,8 +307,16 @@
 #define cpu_has_dsp2		(cpu_data[0].ases & MIPS_ASE_DSP2P)
 #endif
 
+#ifndef cpu_has_dsp3
+#define cpu_has_dsp3		(cpu_data[0].ases & MIPS_ASE_DSP3)
+#endif
+
 #ifndef cpu_has_mipsmt
 #define cpu_has_mipsmt		(cpu_data[0].ases & MIPS_ASE_MIPSMT)
+#endif
+
+#ifndef cpu_has_vp
+#define cpu_has_vp		(cpu_data[0].options & MIPS_CPU_VP)
 #endif
 
 #ifndef cpu_has_userlocal
@@ -416,6 +420,13 @@
 
 #ifndef cpu_has_small_pages
 # define cpu_has_small_pages	(cpu_data[0].options & MIPS_CPU_SP)
+#endif
+
+#ifndef cpu_has_nan_legacy
+#define cpu_has_nan_legacy	(cpu_data[0].options & MIPS_CPU_NAN_LEGACY)
+#endif
+#ifndef cpu_has_nan_2008
+#define cpu_has_nan_2008	(cpu_data[0].options & MIPS_CPU_NAN_2008)
 #endif
 
 #endif /* __ASM_CPU_FEATURES_H */

@@ -241,6 +241,13 @@ struct dasd_ccw_req {
 typedef struct dasd_ccw_req *(*dasd_erp_fn_t) (struct dasd_ccw_req *);
 
 /*
+ * A single CQR can only contain a maximum of 255 CCWs. It is limited by
+ * the locate record and locate record extended count value which can only hold
+ * 1 Byte max.
+ */
+#define DASD_CQR_MAX_CCW 255
+
+/*
  * Unique identifier for dasd device.
  */
 #define UA_NOT_CONFIGURED  0x00
@@ -358,6 +365,8 @@ struct dasd_discipline {
 	int (*get_uid) (struct dasd_device *, struct dasd_uid *);
 	void (*kick_validate) (struct dasd_device *);
 	int (*check_attention)(struct dasd_device *, __u8);
+	int (*host_access_count)(struct dasd_device *);
+	int (*hosts_print)(struct dasd_device *, struct seq_file *);
 };
 
 extern struct dasd_discipline *dasd_diag_discipline_pointer;
@@ -438,7 +447,7 @@ struct dasd_device {
 	/* Device discipline stuff. */
 	struct dasd_discipline *discipline;
 	struct dasd_discipline *base_discipline;
-	char *private;
+	void *private;
 	struct dasd_path path_data;
 
 	/* Device state and target state. */
@@ -463,6 +472,7 @@ struct dasd_device {
 	struct work_struct restore_device;
 	struct work_struct reload_device;
 	struct work_struct kick_validate;
+	struct work_struct suc_work;
 	struct timer_list timer;
 
 	debug_info_t *debug_area;
@@ -479,6 +489,7 @@ struct dasd_device {
 	unsigned long blk_timeout;
 
 	struct dentry *debugfs_dentry;
+	struct dentry *hosts_dentry;
 	struct dasd_profile profile;
 };
 
@@ -535,6 +546,7 @@ struct dasd_attention_data {
 #define DASD_FLAG_SAFE_OFFLINE_RUNNING	11	/* safe offline running */
 #define DASD_FLAG_ABORTALL	12	/* Abort all noretry requests */
 #define DASD_FLAG_PATH_VERIFY	13	/* Path verification worker running */
+#define DASD_FLAG_SUC		14	/* unhandled summary unit check */
 
 #define DASD_SLEEPON_START_TAG	((void *) 1)
 #define DASD_SLEEPON_END_TAG	((void *) 2)

@@ -34,8 +34,8 @@
  * set of these objects.
  *
  * Fences are used to detile GTT memory mappings. They're also connected to the
- * hardware frontbuffer render tracking and hence interract with frontbuffer
- * conmpression. Furthermore on older platforms fences are required for tiled
+ * hardware frontbuffer render tracking and hence interact with frontbuffer
+ * compression. Furthermore on older platforms fences are required for tiled
  * objects used by the display engine. They can also be used by the render
  * engine - they're required for blitter commands and are optional for render
  * commands. But on gen4+ both display (with the exception of fbc) and rendering
@@ -46,8 +46,8 @@
  *
  * Finally note that because fences are such a restricted resource they're
  * dynamically associated with objects. Furthermore fence state is committed to
- * the hardware lazily to avoid unecessary stalls on gen2/3. Therefore code must
- * explictly call i915_gem_object_get_fence() to synchronize fencing status
+ * the hardware lazily to avoid unnecessary stalls on gen2/3. Therefore code must
+ * explicitly call i915_gem_object_get_fence() to synchronize fencing status
  * for cpu access. Also note that some code wants an unfenced view, for those
  * cases the fence can be removed forcefully with i915_gem_object_put_fence().
  *
@@ -59,7 +59,7 @@ static void i965_write_fence_reg(struct drm_device *dev, int reg,
 				 struct drm_i915_gem_object *obj)
 {
 	struct drm_i915_private *dev_priv = dev->dev_private;
-	int fence_reg_lo, fence_reg_hi;
+	i915_reg_t fence_reg_lo, fence_reg_hi;
 	int fence_pitch_shift;
 
 	if (INTEL_INFO(dev)->gen >= 6) {
@@ -317,7 +317,7 @@ i915_find_fence_reg(struct drm_device *dev)
 
 	/* First try to find a free reg */
 	avail = NULL;
-	for (i = dev_priv->fence_reg_start; i < dev_priv->num_fence_regs; i++) {
+	for (i = 0; i < dev_priv->num_fence_regs; i++) {
 		reg = &dev_priv->fence_regs[i];
 		if (!reg->obj)
 			return reg;
@@ -527,7 +527,7 @@ void i915_gem_restore_fences(struct drm_device *dev)
  * required.
  *
  * When bit 17 is XORed in, we simply refuse to tile at all.  Bit
- * 17 is not just a page offset, so as we page an objet out and back in,
+ * 17 is not just a page offset, so as we page an object out and back in,
  * individual pages in it will have different bit 17 addresses, resulting in
  * each 64 bytes being swapped with its neighbor!
  *
@@ -642,11 +642,10 @@ i915_gem_detect_bit_6_swizzle(struct drm_device *dev)
 		}
 
 		/* check for L-shaped memory aka modified enhanced addressing */
-		if (IS_GEN4(dev)) {
-			uint32_t ddc2 = I915_READ(DCC2);
-
-			if (!(ddc2 & DCC2_MODIFIED_ENHANCED_DISABLE))
-				dev_priv->quirks |= QUIRK_PIN_SWIZZLED_PAGES;
+		if (IS_GEN4(dev) &&
+		    !(I915_READ(DCC2) & DCC2_MODIFIED_ENHANCED_DISABLE)) {
+			swizzle_x = I915_BIT_6_SWIZZLE_UNKNOWN;
+			swizzle_y = I915_BIT_6_SWIZZLE_UNKNOWN;
 		}
 
 		if (dcc == 0xffffffff) {
@@ -675,14 +674,33 @@ i915_gem_detect_bit_6_swizzle(struct drm_device *dev)
 		 * matching, which was the case for the swizzling required in
 		 * the table above, or from the 1-ch value being less than
 		 * the minimum size of a rank.
+		 *
+		 * Reports indicate that the swizzling actually
+		 * varies depending upon page placement inside the
+		 * channels, i.e. we see swizzled pages where the
+		 * banks of memory are paired and unswizzled on the
+		 * uneven portion, so leave that as unknown.
 		 */
-		if (I915_READ16(C0DRB3) != I915_READ16(C1DRB3)) {
-			swizzle_x = I915_BIT_6_SWIZZLE_NONE;
-			swizzle_y = I915_BIT_6_SWIZZLE_NONE;
-		} else {
+		if (I915_READ16(C0DRB3) == I915_READ16(C1DRB3)) {
 			swizzle_x = I915_BIT_6_SWIZZLE_9_10;
 			swizzle_y = I915_BIT_6_SWIZZLE_9;
 		}
+	}
+
+	if (swizzle_x == I915_BIT_6_SWIZZLE_UNKNOWN ||
+	    swizzle_y == I915_BIT_6_SWIZZLE_UNKNOWN) {
+		/* Userspace likes to explode if it sees unknown swizzling,
+		 * so lie. We will finish the lie when reporting through
+		 * the get-tiling-ioctl by reporting the physical swizzle
+		 * mode as unknown instead.
+		 *
+		 * As we don't strictly know what the swizzling is, it may be
+		 * bit17 dependent, and so we need to also prevent the pages
+		 * from being moved.
+		 */
+		dev_priv->quirks |= QUIRK_PIN_SWIZZLED_PAGES;
+		swizzle_x = I915_BIT_6_SWIZZLE_NONE;
+		swizzle_y = I915_BIT_6_SWIZZLE_NONE;
 	}
 
 	dev_priv->mm.bit_6_swizzle_x = swizzle_x;

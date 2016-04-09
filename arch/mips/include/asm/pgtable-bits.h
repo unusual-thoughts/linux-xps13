@@ -112,8 +112,9 @@
  */
 #define _PAGE_PRESENT_SHIFT	0
 #define _PAGE_PRESENT		(1 << _PAGE_PRESENT_SHIFT)
-/* R2 or later cores check for RI/XI support to determine _PAGE_READ */
-#if defined(CONFIG_CPU_MIPSR2) || defined(CONFIG_CPU_MIPSR6)
+/* R2, specific processors or later cores check for RI/XI support to determine
+ * _PAGE_READ */
+#ifdef CONFIG_CPU_HAS_RIXI
 #define _PAGE_WRITE_SHIFT	(_PAGE_PRESENT_SHIFT + 1)
 #define _PAGE_WRITE		(1 << _PAGE_WRITE_SHIFT)
 #else
@@ -131,14 +132,12 @@
 /* Huge TLB page */
 #define _PAGE_HUGE_SHIFT	(_PAGE_MODIFIED_SHIFT + 1)
 #define _PAGE_HUGE		(1 << _PAGE_HUGE_SHIFT)
-#define _PAGE_SPLITTING_SHIFT	(_PAGE_HUGE_SHIFT + 1)
-#define _PAGE_SPLITTING		(1 << _PAGE_SPLITTING_SHIFT)
 #endif	/* CONFIG_64BIT && CONFIG_MIPS_HUGE_TLB_SUPPORT */
 
-#if defined(CONFIG_CPU_MIPSR2) || defined(CONFIG_CPU_MIPSR6)
+#ifdef CONFIG_CPU_HAS_RIXI
 /* XI - page cannot be executed */
-#ifdef _PAGE_SPLITTING_SHIFT
-#define _PAGE_NO_EXEC_SHIFT	(_PAGE_SPLITTING_SHIFT + 1)
+#ifdef _PAGE_HUGE_SHIFT
+#define _PAGE_NO_EXEC_SHIFT	(_PAGE_HUGE_SHIFT + 1)
 #else
 #define _PAGE_NO_EXEC_SHIFT	(_PAGE_MODIFIED_SHIFT + 1)
 #endif
@@ -149,12 +148,12 @@
 #define _PAGE_READ		(cpu_has_rixi ? 0 : (1 << _PAGE_READ_SHIFT))
 #define _PAGE_NO_READ_SHIFT	_PAGE_READ_SHIFT
 #define _PAGE_NO_READ		(cpu_has_rixi ? (1 << _PAGE_READ_SHIFT) : 0)
-#endif	/* defined(CONFIG_CPU_MIPSR2) || defined(CONFIG_CPU_MIPSR6) */
+#endif	/* CONFIG_CPU_HAS_RIXI */
 
 #if defined(_PAGE_NO_READ_SHIFT)
 #define _PAGE_GLOBAL_SHIFT	(_PAGE_NO_READ_SHIFT + 1)
-#elif defined(_PAGE_SPLITTING_SHIFT)
-#define _PAGE_GLOBAL_SHIFT	(_PAGE_SPLITTING_SHIFT + 1)
+#elif defined(_PAGE_HUGE_SHIFT)
+#define _PAGE_GLOBAL_SHIFT	(_PAGE_HUGE_SHIFT + 1)
 #else
 #define _PAGE_GLOBAL_SHIFT	(_PAGE_MODIFIED_SHIFT + 1)
 #endif
@@ -200,7 +199,7 @@
  */
 static inline uint64_t pte_to_entrylo(unsigned long pte_val)
 {
-#if defined(CONFIG_CPU_MIPSR2) || defined(CONFIG_CPU_MIPSR6)
+#ifdef CONFIG_CPU_HAS_RIXI
 	if (cpu_has_rixi) {
 		int sa;
 #ifdef CONFIG_32BIT

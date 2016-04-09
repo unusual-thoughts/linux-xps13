@@ -44,7 +44,6 @@ int br_dev_queue_push_xmit(struct net *net, struct sock *sk, struct sk_buff *skb
 
 	skb_push(skb, ETH_HLEN);
 	br_drop_fake_rtable(skb);
-	skb_sender_cpu_clear(skb);
 
 	if (skb->ip_summed == CHECKSUM_PARTIAL &&
 	    (skb->protocol == htons(ETH_P_8021Q) ||
@@ -141,7 +140,7 @@ EXPORT_SYMBOL_GPL(br_deliver);
 /* called with rcu_read_lock */
 void br_forward(const struct net_bridge_port *to, struct sk_buff *skb, struct sk_buff *skb0)
 {
-	if (should_deliver(to, skb)) {
+	if (to && should_deliver(to, skb)) {
 		if (skb0)
 			deliver_clone(to, skb, __br_forward);
 		else

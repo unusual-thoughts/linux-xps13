@@ -105,11 +105,13 @@ static const struct bmips_quirk bmips_quirk_list[] = {
 	{ "brcm,bcm33843-viper",	&bcm3384_viper_quirks		},
 	{ "brcm,bcm6328",		&bcm6328_quirks			},
 	{ "brcm,bcm6368",		&bcm6368_quirks			},
+	{ "brcm,bcm63168",		&bcm6368_quirks			},
 	{ },
 };
 
 void __init prom_init(void)
 {
+	bmips_cpu_setup();
 	register_bmips_smp_ops();
 }
 
@@ -157,7 +159,6 @@ void __init plat_mem_setup(void)
 		panic("no dtb found");
 
 	__dt_setup_arch(dtb);
-	strlcpy(arcs_cmdline, boot_command_line, COMMAND_LINE_SIZE);
 
 	for (q = bmips_quirk_list; q->quirk_fn; q++) {
 		if (of_flat_dt_is_compatible(of_get_flat_dt_root(),

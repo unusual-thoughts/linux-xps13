@@ -17,7 +17,6 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/io.h>
@@ -47,14 +46,9 @@ struct xgene_gpio {
 #endif
 };
 
-static inline struct xgene_gpio *to_xgene_gpio(struct gpio_chip *chip)
-{
-	return container_of(chip, struct xgene_gpio, chip);
-}
-
 static int xgene_gpio_get(struct gpio_chip *gc, unsigned int offset)
 {
-	struct xgene_gpio *chip = to_xgene_gpio(gc);
+	struct xgene_gpio *chip = gpiochip_get_data(gc);
 	unsigned long bank_offset;
 	u32 bit_offset;
 
@@ -65,7 +59,7 @@ static int xgene_gpio_get(struct gpio_chip *gc, unsigned int offset)
 
 static void __xgene_gpio_set(struct gpio_chip *gc, unsigned int offset, int val)
 {
-	struct xgene_gpio *chip = to_xgene_gpio(gc);
+	struct xgene_gpio *chip = gpiochip_get_data(gc);
 	unsigned long bank_offset;
 	u32 setval, bit_offset;
 
@@ -82,7 +76,7 @@ static void __xgene_gpio_set(struct gpio_chip *gc, unsigned int offset, int val)
 
 static void xgene_gpio_set(struct gpio_chip *gc, unsigned int offset, int val)
 {
-	struct xgene_gpio *chip = to_xgene_gpio(gc);
+	struct xgene_gpio *chip = gpiochip_get_data(gc);
 	unsigned long flags;
 
 	spin_lock_irqsave(&chip->lock, flags);
@@ -92,7 +86,7 @@ static void xgene_gpio_set(struct gpio_chip *gc, unsigned int offset, int val)
 
 static int xgene_gpio_dir_in(struct gpio_chip *gc, unsigned int offset)
 {
-	struct xgene_gpio *chip = to_xgene_gpio(gc);
+	struct xgene_gpio *chip = gpiochip_get_data(gc);
 	unsigned long flags, bank_offset;
 	u32 dirval, bit_offset;
 
@@ -113,7 +107,7 @@ static int xgene_gpio_dir_in(struct gpio_chip *gc, unsigned int offset)
 static int xgene_gpio_dir_out(struct gpio_chip *gc,
 					unsigned int offset, int val)
 {
-	struct xgene_gpio *chip = to_xgene_gpio(gc);
+	struct xgene_gpio *chip = gpiochip_get_data(gc);
 	unsigned long flags, bank_offset;
 	u32 dirval, bit_offset;
 
@@ -178,6 +172,11 @@ static int xgene_gpio_probe(struct platform_device *pdev)
 	}
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (!res) {
+		err = -EINVAL;
+		goto err;
+	}
+
 	gpio->base = devm_ioremap_nocache(&pdev->dev, res->start,
 							resource_size(res));
 	if (!gpio->base) {
@@ -188,7 +187,7 @@ static int xgene_gpio_probe(struct platform_device *pdev)
 	gpio->chip.ngpio = XGENE_MAX_GPIOS;
 
 	spin_lock_init(&gpio->lock);
-	gpio->chip.dev = &pdev->dev;
+	gpio->chip.parent = &pdev->dev;
 	gpio->chip.direction_input = xgene_gpio_dir_in;
 	gpio->chip.direction_output = xgene_gpio_dir_out;
 	gpio->chip.get = xgene_gpio_get;
@@ -198,7 +197,7 @@ static int xgene_gpio_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, gpio);
 
-	err = gpiochip_add(&gpio->chip);
+	err = devm_gpiochip_add_data(&pdev->dev, &gpio->chip, gpio);
 	if (err) {
 		dev_err(&pdev->dev,
 			"failed to register gpiochip.\n");
@@ -212,19 +211,10 @@ err:
 	return err;
 }
 
-static int xgene_gpio_remove(struct platform_device *pdev)
-{
-	struct xgene_gpio *gpio = platform_get_drvdata(pdev);
-
-	gpiochip_remove(&gpio->chip);
-	return 0;
-}
-
 static const struct of_device_id xgene_gpio_of_match[] = {
 	{ .compatible = "apm,xgene-gpio", },
 	{},
 };
-MODULE_DEVICE_TABLE(of, xgene_gpio_of_match);
 
 static struct platform_driver xgene_gpio_driver = {
 	.driver = {
@@ -233,11 +223,5 @@ static struct platform_driver xgene_gpio_driver = {
 		.pm     = XGENE_GPIO_PM_OPS,
 	},
 	.probe = xgene_gpio_probe,
-	.remove = xgene_gpio_remove,
 };
-
-module_platform_driver(xgene_gpio_driver);
-
-MODULE_AUTHOR("Feng Kan <fkan@apm.com>");
-MODULE_DESCRIPTION("APM X-Gene GPIO driver");
-MODULE_LICENSE("GPL");
+builtin_platform_driver(xgene_gpio_driver);

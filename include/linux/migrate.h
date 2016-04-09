@@ -23,8 +23,14 @@ enum migrate_reason {
 	MR_SYSCALL,		/* also applies to cpusets */
 	MR_MEMPOLICY_MBIND,
 	MR_NUMA_MISPLACED,
-	MR_CMA
+	MR_CMA,
+	MR_SHMEM_HUGEHOLE,
+	MR_SHMEM_RECOVERY,
+	MR_TYPES
 };
+
+/* In mm/debug.c; also keep sync with include/trace/events/migrate.h */
+extern char *migrate_reason_names[MR_TYPES];
 
 #ifdef CONFIG_MIGRATION
 

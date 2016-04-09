@@ -80,22 +80,12 @@
 
 &dp {
 	samsung,color-space = <0>;
-	samsung,dynamic-range = <0>;
-	samsung,ycbcr-coeff = <0>;
 	samsung,color-depth = <1>;
 	samsung,link-rate = <0x0a>;
 	samsung,lane-count = <4>;
 
 	pinctrl-names = "default";
 	pinctrl-0 = <&dp_hpd>;
-	status = "okay";
-};
-
-&ehci {
-	samsung,vbus-gpio = <&gpx2 6 GPIO_ACTIVE_HIGH>;
-};
-
-&fimd {
 	status = "okay";
 
 	display-timings {
@@ -114,6 +104,14 @@
 			vsync-len = <4>;
 		};
 	};
+};
+
+&ehci {
+	samsung,vbus-gpio = <&gpx2 6 GPIO_ACTIVE_HIGH>;
+};
+
+&fimd {
+	status = "okay";
 };
 
 &hdmi {

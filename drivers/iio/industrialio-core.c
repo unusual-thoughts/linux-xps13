@@ -25,6 +25,7 @@
 #include <linux/slab.h>
 #include <linux/anon_inodes.h>
 #include <linux/debugfs.h>
+#include <linux/mutex.h>
 #include <linux/iio/iio.h>
 #include "iio_core.h"
 #include "iio_core_trigger.h"
@@ -75,6 +76,10 @@ static const char * const iio_chan_type_name_spec[] = {
 	[IIO_ENERGY] = "energy",
 	[IIO_DISTANCE] = "distance",
 	[IIO_VELOCITY] = "velocity",
+	[IIO_CONCENTRATION] = "concentration",
+	[IIO_RESISTANCE] = "resistance",
+	[IIO_PH] = "ph",
+	[IIO_UVINDEX] = "uvindex",
 };
 
 static const char * const iio_modifier_names[] = {
@@ -97,6 +102,7 @@ static const char * const iio_modifier_names[] = {
 	[IIO_MOD_LIGHT_RED] = "red",
 	[IIO_MOD_LIGHT_GREEN] = "green",
 	[IIO_MOD_LIGHT_BLUE] = "blue",
+	[IIO_MOD_LIGHT_UV] = "uv",
 	[IIO_MOD_QUATERNION] = "quaternion",
 	[IIO_MOD_TEMP_AMBIENT] = "ambient",
 	[IIO_MOD_TEMP_OBJECT] = "object",
@@ -111,6 +117,8 @@ static const char * const iio_modifier_names[] = {
 	[IIO_MOD_ROOT_SUM_SQUARED_X_Y_Z] = "sqrt(x^2+y^2+z^2)",
 	[IIO_MOD_I] = "i",
 	[IIO_MOD_Q] = "q",
+	[IIO_MOD_CO2] = "co2",
+	[IIO_MOD_VOC] = "voc",
 };
 
 /* relies on pairs of these shared then separate */
@@ -429,16 +437,15 @@ ssize_t iio_format_value(char *buf, unsigned int type, int size, int *vals)
 		scale_db = true;
 	case IIO_VAL_INT_PLUS_MICRO:
 		if (vals[1] < 0)
-			return sprintf(buf, "-%ld.%06u%s\n", abs(vals[0]),
-					-vals[1],
-				scale_db ? " dB" : "");
+			return sprintf(buf, "-%d.%06u%s\n", abs(vals[0]),
+				       -vals[1], scale_db ? " dB" : "");
 		else
 			return sprintf(buf, "%d.%06u%s\n", vals[0], vals[1],
 				scale_db ? " dB" : "");
 	case IIO_VAL_INT_PLUS_NANO:
 		if (vals[1] < 0)
-			return sprintf(buf, "-%ld.%09u\n", abs(vals[0]),
-					-vals[1]);
+			return sprintf(buf, "-%d.%09u\n", abs(vals[0]),
+				       -vals[1]);
 		else
 			return sprintf(buf, "%d.%09u\n", vals[0], vals[1]);
 	case IIO_VAL_FRACTIONAL:
@@ -466,6 +473,7 @@ ssize_t iio_format_value(char *buf, unsigned int type, int size, int *vals)
 		return 0;
 	}
 }
+EXPORT_SYMBOL_GPL(iio_format_value);
 
 static ssize_t iio_read_channel_info(struct device *dev,
 				     struct device_attribute *attr,
@@ -507,6 +515,12 @@ int iio_str_to_fixpoint(const char *str, int fract_mult,
 {
 	int i = 0, f = 0;
 	bool integer_part = true, negative = false;
+
+	if (fract_mult == 0) {
+		*fract = 0;
+
+		return kstrtoint(str, 0, integer);
+	}
 
 	if (str[0] == '-') {
 		negative = true;
@@ -567,6 +581,9 @@ static ssize_t iio_write_channel_info(struct device *dev,
 	if (indio_dev->info->write_raw_get_fmt)
 		switch (indio_dev->info->write_raw_get_fmt(indio_dev,
 			this_attr->c, this_attr->address)) {
+		case IIO_VAL_INT:
+			fract_mult = 0;
+			break;
 		case IIO_VAL_INT_PLUS_MICRO:
 			fract_mult = 100000;
 			break;
@@ -651,7 +668,7 @@ int __iio_device_attr_init(struct device_attribute *dev_attr,
 			break;
 		case IIO_SEPARATE:
 			if (!chan->indexed) {
-				WARN_ON("Differential channels must be indexed\n");
+				WARN(1, "Differential channels must be indexed\n");
 				ret = -EINVAL;
 				goto error_free_full_postfix;
 			}
@@ -962,7 +979,7 @@ static void iio_device_unregister_sysfs(struct iio_dev *indio_dev)
 static void iio_dev_release(struct device *device)
 {
 	struct iio_dev *indio_dev = dev_to_iio_dev(device);
-	if (indio_dev->modes & INDIO_BUFFER_TRIGGERED)
+	if (indio_dev->modes & (INDIO_BUFFER_TRIGGERED | INDIO_EVENT_TRIGGERED))
 		iio_device_unregister_trigger_consumer(indio_dev);
 	iio_device_unregister_eventset(indio_dev);
 	iio_device_unregister_sysfs(indio_dev);
@@ -1153,6 +1170,8 @@ static long iio_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 
 	if (cmd == IIO_GET_EVENT_FD_IOCTL) {
 		fd = iio_event_getfd(indio_dev);
+		if (fd < 0)
+			return fd;
 		if (copy_to_user(ip, &fd, sizeof(fd)))
 			return -EFAULT;
 		return 0;
@@ -1241,7 +1260,7 @@ int iio_device_register(struct iio_dev *indio_dev)
 			"Failed to register event set\n");
 		goto error_free_sysfs;
 	}
-	if (indio_dev->modes & INDIO_BUFFER_TRIGGERED)
+	if (indio_dev->modes & (INDIO_BUFFER_TRIGGERED | INDIO_EVENT_TRIGGERED))
 		iio_device_register_trigger_consumer(indio_dev);
 
 	if ((indio_dev->modes & INDIO_ALL_BUFFER_MODES) &&
@@ -1358,6 +1377,44 @@ void devm_iio_device_unregister(struct device *dev, struct iio_dev *indio_dev)
 	WARN_ON(rc);
 }
 EXPORT_SYMBOL_GPL(devm_iio_device_unregister);
+
+/**
+ * iio_device_claim_direct_mode - Keep device in direct mode
+ * @indio_dev:	the iio_dev associated with the device
+ *
+ * If the device is in direct mode it is guaranteed to stay
+ * that way until iio_device_release_direct_mode() is called.
+ *
+ * Use with iio_device_release_direct_mode()
+ *
+ * Returns: 0 on success, -EBUSY on failure
+ */
+int iio_device_claim_direct_mode(struct iio_dev *indio_dev)
+{
+	mutex_lock(&indio_dev->mlock);
+
+	if (iio_buffer_enabled(indio_dev)) {
+		mutex_unlock(&indio_dev->mlock);
+		return -EBUSY;
+	}
+	return 0;
+}
+EXPORT_SYMBOL_GPL(iio_device_claim_direct_mode);
+
+/**
+ * iio_device_release_direct_mode - releases claim on direct mode
+ * @indio_dev:	the iio_dev associated with the device
+ *
+ * Release the claim. Device is no longer guaranteed to stay
+ * in direct mode.
+ *
+ * Use with iio_device_claim_direct_mode()
+ */
+void iio_device_release_direct_mode(struct iio_dev *indio_dev)
+{
+	mutex_unlock(&indio_dev->mlock);
+}
+EXPORT_SYMBOL_GPL(iio_device_release_direct_mode);
 
 subsys_initcall(iio_init);
 module_exit(iio_exit);

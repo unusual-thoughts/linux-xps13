@@ -19,6 +19,7 @@
 #include <asm/cpu.h>
 #include <asm/cpu-type.h>
 #include <asm/bootinfo.h>
+#include <asm/hazards.h>
 #include <asm/mmu_context.h>
 #include <asm/pgtable.h>
 #include <asm/tlb.h>
@@ -399,19 +400,20 @@ void add_wired_entry(unsigned long entrylo0, unsigned long entrylo1,
 
 #ifdef CONFIG_TRANSPARENT_HUGEPAGE
 
-int __init has_transparent_hugepage(void)
+int has_transparent_hugepage(void)
 {
-	unsigned int mask;
-	unsigned long flags;
+	static unsigned int mask = -1;
 
-	local_irq_save(flags);
-	write_c0_pagemask(PM_HUGE_MASK);
-	back_to_back_c0_hazard();
-	mask = read_c0_pagemask();
-	write_c0_pagemask(PM_DEFAULT_MASK);
+	if (mask == -1) {	/* first call comes during __init */
+		unsigned long flags;
 
-	local_irq_restore(flags);
-
+		local_irq_save(flags);
+		write_c0_pagemask(PM_HUGE_MASK);
+		back_to_back_c0_hazard();
+		mask = read_c0_pagemask();
+		write_c0_pagemask(PM_DEFAULT_MASK);
+		local_irq_restore(flags);
+	}
 	return mask == PM_HUGE_MASK;
 }
 
@@ -486,6 +488,10 @@ static void r4k_tlb_configure(void)
 	 *     be set to fixed-size pages.
 	 */
 	write_c0_pagemask(PM_DEFAULT_MASK);
+	back_to_back_c0_hazard();
+	if (read_c0_pagemask() != PM_DEFAULT_MASK)
+		panic("MMU doesn't support PAGE_SIZE=0x%lx", PAGE_SIZE);
+
 	write_c0_wired(0);
 	if (current_cpu_type() == CPU_R10000 ||
 	    current_cpu_type() == CPU_R12000 ||

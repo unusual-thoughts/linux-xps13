@@ -99,6 +99,161 @@ static inline void cpu_set_fpu_fcsr_mask(struct cpuinfo_mips *c)
 }
 
 /*
+ * Determine the IEEE 754 NaN encodings and ABS.fmt/NEG.fmt execution modes
+ * supported by FPU hardware.
+ */
+static void cpu_set_fpu_2008(struct cpuinfo_mips *c)
+{
+	if (c->isa_level & (MIPS_CPU_ISA_M32R1 | MIPS_CPU_ISA_M64R1 |
+			    MIPS_CPU_ISA_M32R2 | MIPS_CPU_ISA_M64R2 |
+			    MIPS_CPU_ISA_M32R6 | MIPS_CPU_ISA_M64R6)) {
+		unsigned long sr, fir, fcsr, fcsr0, fcsr1;
+
+		sr = read_c0_status();
+		__enable_fpu(FPU_AS_IS);
+
+		fir = read_32bit_cp1_register(CP1_REVISION);
+		if (fir & MIPS_FPIR_HAS2008) {
+			fcsr = read_32bit_cp1_register(CP1_STATUS);
+
+			fcsr0 = fcsr & ~(FPU_CSR_ABS2008 | FPU_CSR_NAN2008);
+			write_32bit_cp1_register(CP1_STATUS, fcsr0);
+			fcsr0 = read_32bit_cp1_register(CP1_STATUS);
+
+			fcsr1 = fcsr | FPU_CSR_ABS2008 | FPU_CSR_NAN2008;
+			write_32bit_cp1_register(CP1_STATUS, fcsr1);
+			fcsr1 = read_32bit_cp1_register(CP1_STATUS);
+
+			write_32bit_cp1_register(CP1_STATUS, fcsr);
+
+			if (!(fcsr0 & FPU_CSR_NAN2008))
+				c->options |= MIPS_CPU_NAN_LEGACY;
+			if (fcsr1 & FPU_CSR_NAN2008)
+				c->options |= MIPS_CPU_NAN_2008;
+
+			if ((fcsr0 ^ fcsr1) & FPU_CSR_ABS2008)
+				c->fpu_msk31 &= ~FPU_CSR_ABS2008;
+			else
+				c->fpu_csr31 |= fcsr & FPU_CSR_ABS2008;
+
+			if ((fcsr0 ^ fcsr1) & FPU_CSR_NAN2008)
+				c->fpu_msk31 &= ~FPU_CSR_NAN2008;
+			else
+				c->fpu_csr31 |= fcsr & FPU_CSR_NAN2008;
+		} else {
+			c->options |= MIPS_CPU_NAN_LEGACY;
+		}
+
+		write_c0_status(sr);
+	} else {
+		c->options |= MIPS_CPU_NAN_LEGACY;
+	}
+}
+
+/*
+ * IEEE 754 conformance mode to use.  Affects the NaN encoding and the
+ * ABS.fmt/NEG.fmt execution mode.
+ */
+static enum { STRICT, LEGACY, STD2008, RELAXED } ieee754 = STRICT;
+
+/*
+ * Set the IEEE 754 NaN encodings and the ABS.fmt/NEG.fmt execution modes
+ * to support by the FPU emulator according to the IEEE 754 conformance
+ * mode selected.  Note that "relaxed" straps the emulator so that it
+ * allows 2008-NaN binaries even for legacy processors.
+ */
+static void cpu_set_nofpu_2008(struct cpuinfo_mips *c)
+{
+	c->options &= ~(MIPS_CPU_NAN_2008 | MIPS_CPU_NAN_LEGACY);
+	c->fpu_csr31 &= ~(FPU_CSR_ABS2008 | FPU_CSR_NAN2008);
+	c->fpu_msk31 &= ~(FPU_CSR_ABS2008 | FPU_CSR_NAN2008);
+
+	switch (ieee754) {
+	case STRICT:
+		if (c->isa_level & (MIPS_CPU_ISA_M32R1 | MIPS_CPU_ISA_M64R1 |
+				    MIPS_CPU_ISA_M32R2 | MIPS_CPU_ISA_M64R2 |
+				    MIPS_CPU_ISA_M32R6 | MIPS_CPU_ISA_M64R6)) {
+			c->options |= MIPS_CPU_NAN_2008 | MIPS_CPU_NAN_LEGACY;
+		} else {
+			c->options |= MIPS_CPU_NAN_LEGACY;
+			c->fpu_msk31 |= FPU_CSR_ABS2008 | FPU_CSR_NAN2008;
+		}
+		break;
+	case LEGACY:
+		c->options |= MIPS_CPU_NAN_LEGACY;
+		c->fpu_msk31 |= FPU_CSR_ABS2008 | FPU_CSR_NAN2008;
+		break;
+	case STD2008:
+		c->options |= MIPS_CPU_NAN_2008;
+		c->fpu_csr31 |= FPU_CSR_ABS2008 | FPU_CSR_NAN2008;
+		c->fpu_msk31 |= FPU_CSR_ABS2008 | FPU_CSR_NAN2008;
+		break;
+	case RELAXED:
+		c->options |= MIPS_CPU_NAN_2008 | MIPS_CPU_NAN_LEGACY;
+		break;
+	}
+}
+
+/*
+ * Override the IEEE 754 NaN encoding and ABS.fmt/NEG.fmt execution mode
+ * according to the "ieee754=" parameter.
+ */
+static void cpu_set_nan_2008(struct cpuinfo_mips *c)
+{
+	switch (ieee754) {
+	case STRICT:
+		mips_use_nan_legacy = !!cpu_has_nan_legacy;
+		mips_use_nan_2008 = !!cpu_has_nan_2008;
+		break;
+	case LEGACY:
+		mips_use_nan_legacy = !!cpu_has_nan_legacy;
+		mips_use_nan_2008 = !cpu_has_nan_legacy;
+		break;
+	case STD2008:
+		mips_use_nan_legacy = !cpu_has_nan_2008;
+		mips_use_nan_2008 = !!cpu_has_nan_2008;
+		break;
+	case RELAXED:
+		mips_use_nan_legacy = true;
+		mips_use_nan_2008 = true;
+		break;
+	}
+}
+
+/*
+ * IEEE 754 NaN encoding and ABS.fmt/NEG.fmt execution mode override
+ * settings:
+ *
+ * strict:  accept binaries that request a NaN encoding supported by the FPU
+ * legacy:  only accept legacy-NaN binaries
+ * 2008:    only accept 2008-NaN binaries
+ * relaxed: accept any binaries regardless of whether supported by the FPU
+ */
+static int __init ieee754_setup(char *s)
+{
+	if (!s)
+		return -1;
+	else if (!strcmp(s, "strict"))
+		ieee754 = STRICT;
+	else if (!strcmp(s, "legacy"))
+		ieee754 = LEGACY;
+	else if (!strcmp(s, "2008"))
+		ieee754 = STD2008;
+	else if (!strcmp(s, "relaxed"))
+		ieee754 = RELAXED;
+	else
+		return -1;
+
+	if (!(boot_cpu_data.options & MIPS_CPU_FPU))
+		cpu_set_nofpu_2008(&boot_cpu_data);
+	cpu_set_nan_2008(&boot_cpu_data);
+
+	return 0;
+}
+
+early_param("ieee754", ieee754_setup);
+
+/*
  * Set the FIR feature flags for the FPU emulator.
  */
 static void cpu_set_nofpu_id(struct cpuinfo_mips *c)
@@ -113,6 +268,8 @@ static void cpu_set_nofpu_id(struct cpuinfo_mips *c)
 	if (c->isa_level & (MIPS_CPU_ISA_M32R2 | MIPS_CPU_ISA_M64R2 |
 			    MIPS_CPU_ISA_M32R6 | MIPS_CPU_ISA_M64R6))
 		value |= MIPS_FPIR_F64 | MIPS_FPIR_L | MIPS_FPIR_W;
+	if (c->options & MIPS_CPU_NAN_2008)
+		value |= MIPS_FPIR_HAS2008;
 	c->fpu_id = value;
 }
 
@@ -137,6 +294,8 @@ static void cpu_set_fpu_opts(struct cpuinfo_mips *c)
 	}
 
 	cpu_set_fpu_fcsr_mask(c);
+	cpu_set_fpu_2008(c);
+	cpu_set_nan_2008(c);
 }
 
 /*
@@ -147,6 +306,8 @@ static void cpu_set_nofpu_opts(struct cpuinfo_mips *c)
 	c->options &= ~MIPS_CPU_FPU;
 	c->fpu_msk31 = mips_nofpu_msk31;
 
+	cpu_set_nofpu_2008(c);
+	cpu_set_nan_2008(c);
 	cpu_set_nofpu_id(c);
 }
 
@@ -378,6 +539,7 @@ static int set_ftlb_enable(struct cpuinfo_mips *c, int enable)
 	switch (c->cputype) {
 	case CPU_PROAPTIV:
 	case CPU_P5600:
+	case CPU_P6600:
 		/* proAptiv & related cores use Config6 to enable the FTLB */
 		config = read_c0_config6();
 		/* Clear the old probability value */
@@ -518,8 +680,11 @@ static inline unsigned int decode_config3(struct cpuinfo_mips *c)
 		c->options |= MIPS_CPU_RIXI;
 	if (config3 & MIPS_CONF3_DSP)
 		c->ases |= MIPS_ASE_DSP;
-	if (config3 & MIPS_CONF3_DSP2P)
+	if (config3 & MIPS_CONF3_DSP2P) {
 		c->ases |= MIPS_ASE_DSP2P;
+		if (cpu_has_mips_r6)
+			c->ases |= MIPS_ASE_DSP3;
+	}
 	if (config3 & MIPS_CONF3_VINT)
 		c->options |= MIPS_CPU_VINT;
 	if (config3 & MIPS_CONF3_VEIC)
@@ -536,8 +701,7 @@ static inline unsigned int decode_config3(struct cpuinfo_mips *c)
 		c->options |= MIPS_CPU_SEGMENTS;
 	if (config3 & MIPS_CONF3_MSA)
 		c->ases |= MIPS_ASE_MSA;
-	/* Only tested on 32-bit cores */
-	if ((config3 & MIPS_CONF3_PW) && config_enabled(CONFIG_32BIT)) {
+	if (config3 & MIPS_CONF3_PW) {
 		c->htw_seq = 0;
 		c->options |= MIPS_CPU_HTW;
 	}
@@ -636,6 +800,8 @@ static inline unsigned int decode_config5(struct cpuinfo_mips *c)
 	if (config5 & MIPS_CONF5_MVH)
 		c->options |= MIPS_CPU_XPA;
 #endif
+	if (cpu_has_mips_r6 && (config5 & MIPS_CONF5_VP))
+		c->options |= MIPS_CPU_VP;
 
 	return config5 & MIPS_CONF_M;
 }
@@ -667,15 +833,6 @@ static void decode_configs(struct cpuinfo_mips *c)
 		ok = decode_config5(c);
 
 	mips_probe_watch_registers(c);
-
-	if (cpu_has_rixi) {
-		/* Enable the RIXI exceptions */
-		set_c0_pagegrain(PG_IEC);
-		back_to_back_c0_hazard();
-		/* Verify the IEC bit is set */
-		if (read_c0_pagegrain() & PG_IEC)
-			c->options |= MIPS_CPU_RIXIEX;
-	}
 
 #ifndef CONFIG_MIPS_CPS
 	if (cpu_has_mips_r2_r6) {
@@ -1154,6 +1311,10 @@ static inline void cpu_probe_mips(struct cpuinfo_mips *c, unsigned int cpu)
 		c->cputype = CPU_P5600;
 		__cpu_name[cpu] = "MIPS P5600";
 		break;
+	case PRID_IMP_P6600:
+		c->cputype = CPU_P6600;
+		__cpu_name[cpu] = "MIPS P6600";
+		break;
 	case PRID_IMP_I6400:
 		c->cputype = CPU_I6400;
 		__cpu_name[cpu] = "MIPS I6400";
@@ -1161,6 +1322,10 @@ static inline void cpu_probe_mips(struct cpuinfo_mips *c, unsigned int cpu)
 	case PRID_IMP_M5150:
 		c->cputype = CPU_M5150;
 		__cpu_name[cpu] = "MIPS M5150";
+		break;
+	case PRID_IMP_M6250:
+		c->cputype = CPU_M6250;
+		__cpu_name[cpu] = "MIPS M6250";
 		break;
 	}
 
@@ -1275,6 +1440,7 @@ static inline void cpu_probe_broadcom(struct cpuinfo_mips *c, unsigned int cpu)
 			c->cputype = CPU_BMIPS4380;
 			__cpu_name[cpu] = "Broadcom BMIPS4380";
 			set_elf_platform(cpu, "bmips4380");
+			c->options |= MIPS_CPU_RIXI;
 		} else {
 			c->cputype = CPU_BMIPS4350;
 			__cpu_name[cpu] = "Broadcom BMIPS4350";
@@ -1287,7 +1453,7 @@ static inline void cpu_probe_broadcom(struct cpuinfo_mips *c, unsigned int cpu)
 		c->cputype = CPU_BMIPS5000;
 		__cpu_name[cpu] = "Broadcom BMIPS5000";
 		set_elf_platform(cpu, "bmips5000");
-		c->options |= MIPS_CPU_ULRI;
+		c->options |= MIPS_CPU_ULRI | MIPS_CPU_RIXI;
 		break;
 	}
 }
@@ -1321,6 +1487,8 @@ platform:
 		set_elf_platform(cpu, "octeon2");
 		break;
 	case PRID_IMP_CAVIUM_CN70XX:
+	case PRID_IMP_CAVIUM_CN73XX:
+	case PRID_IMP_CAVIUM_CNF75XX:
 	case PRID_IMP_CAVIUM_CN78XX:
 		c->cputype = CPU_CAVIUM_OCTEON3;
 		__cpu_name[cpu] = "Cavium Octeon III";
@@ -1499,6 +1667,15 @@ void cpu_probe(void)
 	 * manually setup otherwise it could trigger some nasty bugs.
 	 */
 	BUG_ON(current_cpu_type() != c->cputype);
+
+	if (cpu_has_rixi) {
+		/* Enable the RIXI exceptions */
+		set_c0_pagegrain(PG_IEC);
+		back_to_back_c0_hazard();
+		/* Verify the IEC bit is set */
+		if (read_c0_pagegrain() & PG_IEC)
+			c->options |= MIPS_CPU_RIXIEX;
+	}
 
 	if (mips_fpu_disabled)
 		c->options &= ~MIPS_CPU_FPU;
