@@ -598,7 +598,7 @@ static int i915_gem_pageflip_info(struct seq_file *m, void *data)
 					   engine->name,
 					   i915_gem_request_get_seqno(work->flip_queued_req),
 					   dev_priv->next_seqno,
-					   engine->get_seqno(engine, true),
+					   engine->get_seqno(engine),
 					   i915_gem_request_completed(work->flip_queued_req, true));
 			} else
 				seq_printf(m, "Flip not associated with any ring\n");
@@ -728,10 +728,10 @@ static int i915_gem_request_info(struct seq_file *m, void *data)
 static void i915_ring_seqno_info(struct seq_file *m,
 				 struct intel_engine_cs *engine)
 {
-	if (engine->get_seqno) {
-		seq_printf(m, "Current sequence (%s): %x\n",
-			   engine->name, engine->get_seqno(engine, false));
-	}
+	seq_printf(m, "Current sequence (%s): %x\n",
+		   engine->name, engine->get_seqno(engine));
+	seq_printf(m, "Current user interrupts (%s): %x\n",
+		   engine->name, READ_ONCE(engine->user_interrupts));
 }
 
 static int i915_gem_seqno_info(struct seq_file *m, void *data)
@@ -1346,8 +1346,8 @@ static int i915_hangcheck_info(struct seq_file *m, void *unused)
 	intel_runtime_pm_get(dev_priv);
 
 	for_each_engine_id(engine, dev_priv, id) {
-		seqno[id] = engine->get_seqno(engine, false);
 		acthd[id] = intel_ring_get_active_head(engine);
+		seqno[id] = engine->get_seqno(engine);
 	}
 
 	i915_get_extra_instdone(dev, instdone);
@@ -1363,8 +1363,13 @@ static int i915_hangcheck_info(struct seq_file *m, void *unused)
 
 	for_each_engine_id(engine, dev_priv, id) {
 		seq_printf(m, "%s:\n", engine->name);
-		seq_printf(m, "\tseqno = %x [current %x]\n",
-			   engine->hangcheck.seqno, seqno[id]);
+		seq_printf(m, "\tseqno = %x [current %x, last %x]\n",
+			   engine->hangcheck.seqno,
+			   seqno[id],
+			   engine->last_submitted_seqno);
+		seq_printf(m, "\tuser interrupts = %x [current %x]\n",
+			   engine->hangcheck.user_interrupts,
+			   READ_ONCE(engine->user_interrupts));
 		seq_printf(m, "\tACTHD = 0x%08llx [current 0x%08llx]\n",
 			   (long long)engine->hangcheck.acthd,
 			   (long long)acthd[id]);
