@@ -556,25 +556,12 @@ static void intel_lrc_irq_handler(unsigned long data)
 
 	status_pointer = I915_READ_FW(RING_CONTEXT_STATUS_PTR(engine));
 
-<<<<<<< HEAD
-	read_pointer = ring->next_context_status_buffer;
-	write_pointer = status_pointer & 0x07;
-=======
 	read_pointer = engine->next_context_status_buffer;
 	write_pointer = GEN8_CSB_WRITE_PTR(status_pointer);
->>>>>>> xps4.5
 	if (read_pointer > write_pointer)
 		write_pointer += 6;
 
 	while (read_pointer < write_pointer) {
-<<<<<<< HEAD
-		read_pointer++;
-		status = I915_READ(RING_CONTEXT_STATUS_BUF_LO(ring, read_pointer % 6));
-		status_id = I915_READ(RING_CONTEXT_STATUS_BUF_HI(ring, read_pointer % 6));
-
-		if (status & GEN8_CTX_STATUS_IDLE_ACTIVE)
-			continue;
-=======
 		if (WARN_ON_ONCE(csb_read == GEN8_CSB_ENTRIES))
 			break;
 		csb[csb_read][0] = get_context_status(engine, ++read_pointer,
@@ -589,7 +576,6 @@ static void intel_lrc_irq_handler(unsigned long data)
 	I915_WRITE_FW(RING_CONTEXT_STATUS_PTR(engine),
 		      _MASKED_FIELD(GEN8_CSB_READ_PTR_MASK,
 				    engine->next_context_status_buffer << 8));
->>>>>>> xps4.5
 
 	intel_uncore_forcewake_put(dev_priv, FORCEWAKE_ALL);
 
@@ -616,20 +602,10 @@ static void intel_lrc_irq_handler(unsigned long data)
 			execlists_context_unqueue(engine);
 	}
 
-<<<<<<< HEAD
-	spin_unlock(&ring->execlist_lock);
-
-	WARN(submit_contexts > 2, "More than two context complete events?\n");
-	ring->next_context_status_buffer = write_pointer % 6;
-
-	I915_WRITE(RING_CONTEXT_STATUS_PTR(ring),
-		   _MASKED_FIELD(0x07 << 8, ((u32)ring->next_context_status_buffer & 0x07) << 8));
-=======
 	spin_unlock(&engine->execlist_lock);
 
 	if (unlikely(submit_contexts > 2))
 		DRM_ERROR("More than two context complete events?\n");
->>>>>>> xps4.5
 }
 
 static void execlists_context_queue(struct drm_i915_gem_request *request)
@@ -1588,10 +1564,7 @@ static int gen8_init_common_ring(struct intel_engine_cs *engine)
 {
 	struct drm_device *dev = engine->dev;
 	struct drm_i915_private *dev_priv = dev->dev_private;
-<<<<<<< HEAD
-=======
 	unsigned int next_context_status_buffer_hw;
->>>>>>> xps4.5
 
 	lrc_setup_hardware_status_page(engine,
 				       dev_priv->kernel_context->engine[engine->id].state);
@@ -1603,11 +1576,6 @@ static int gen8_init_common_ring(struct intel_engine_cs *engine)
 	I915_WRITE(RING_MODE_GEN7(engine),
 		   _MASKED_BIT_DISABLE(GFX_REPLAY_MODE) |
 		   _MASKED_BIT_ENABLE(GFX_RUN_LIST_ENABLE));
-<<<<<<< HEAD
-	POSTING_READ(RING_MODE_GEN7(ring));
-	ring->next_context_status_buffer = 0;
-	DRM_DEBUG_DRIVER("Execlists enabled for %s\n", ring->name);
-=======
 	POSTING_READ(RING_MODE_GEN7(engine));
 
 	/*
@@ -1635,7 +1603,6 @@ static int gen8_init_common_ring(struct intel_engine_cs *engine)
 
 	engine->next_context_status_buffer = next_context_status_buffer_hw;
 	DRM_DEBUG_DRIVER("Execlists enabled for %s\n", engine->name);
->>>>>>> xps4.5
 
 	intel_engine_init_hangcheck(engine);
 
@@ -1839,11 +1806,8 @@ static int gen8_emit_flush_render(struct drm_i915_gem_request *request,
 	if (flush_domains) {
 		flags |= PIPE_CONTROL_RENDER_TARGET_CACHE_FLUSH;
 		flags |= PIPE_CONTROL_DEPTH_CACHE_FLUSH;
-<<<<<<< HEAD
-=======
 		flags |= PIPE_CONTROL_DC_FLUSH_ENABLE;
 		flags |= PIPE_CONTROL_FLUSH_ENABLE;
->>>>>>> xps4.5
 	}
 
 	if (invalidate_domains) {
