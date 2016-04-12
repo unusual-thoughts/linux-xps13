@@ -580,7 +580,6 @@ static int vvp_pgcache_show(struct seq_file *f, void *v)
 				lock_page(vmpage);
 				page = cl_vmpage_page(vmpage, clob);
 				unlock_page(vmpage);
-
 				put_page(vmpage);
 			}
 
